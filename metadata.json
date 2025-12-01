@@ -1,0 +1,5 @@
+{
+  "name": "AnimNode - Procedural 2D Animator",
+  "description": "A powerful 2D procedural animation editor combining the layer stack of AE with the programmable logic of Houdini. Features Javascript-driven properties, timeline animation, and canvas rendering.",
+  "requestFramePermissions": []
+}
