@@ -1,4 +1,5 @@
 
+
 import { ProjectState, Node } from './types';
 
 export const CANVAS_WIDTH = 800;
@@ -38,8 +39,9 @@ export const INITIAL_PROJECT: ProjectState = {
     height: 600,
     currentTime: 0,
     isPlaying: false,
-    renderer: 'canvas',
-    viewMode: 'list'
+    renderer: 'webgpu', // Default to WebGPU
+    viewMode: 'list',
+    activeTool: 'select'
   },
   audio: {
     hasAudio: false,

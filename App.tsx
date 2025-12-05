@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Timeline } from './components/Timeline';
 import { PropertyPanel } from './components/PropertyPanel';
 import { Viewport } from './components/Viewport';
@@ -6,7 +6,8 @@ import { NodeGraph } from './components/NodeGraph';
 import { Toolbar } from './components/Toolbar';
 import { useProject } from './hooks/useProject';
 import { audioController } from './services/audio';
-import { Square, Circle, Download, Layout, Layers, Volume2, Network } from 'lucide-react';
+import { exportToPNG, exportToSVG } from './services/export';
+import { Square, Circle, Download, Layout, Layers, Volume2, Network, Cpu, Image, FileImage, FileJson, GripVertical } from 'lucide-react';
 
 export default function App() {
   const { 
@@ -16,14 +17,31 @@ export default function App() {
     updateMeta,
     addNode, 
     renameNode,
-    selectNode, 
+    selectNode,
+    moveNode,
     togglePlay, 
-    setTime 
+    setTime,
+    setTool
   } = useProject();
 
   const [propViewMode, setPropViewMode] = useState<'ui' | 'json'>('ui');
   const [focusTarget, setFocusTarget] = useState<{nodeId: string, propKey: string, timestamp: number} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+          if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+          if (e.key.toLowerCase() === 'v') setTool('select');
+          if (e.key.toLowerCase() === 'p') setTool('pen');
+          if (e.code === 'Space') {
+             e.preventDefault();
+             togglePlay();
+          }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [togglePlay, setTool]);
 
   const handleExportJSON = () => {
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(project, null, 2));
@@ -33,6 +51,14 @@ export default function App() {
       document.body.appendChild(downloadAnchorNode);
       downloadAnchorNode.click();
       downloadAnchorNode.remove();
+  };
+  
+  const handleExportPNG = () => {
+      exportToPNG(projectRef.current);
+  };
+
+  const handleExportSVG = () => {
+      exportToSVG(projectRef.current);
   };
 
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -54,7 +80,7 @@ export default function App() {
       updateMeta({ viewMode: mode });
   };
 
-  const setRenderer = (mode: 'canvas' | 'svg') => {
+  const setRenderer = (mode: 'svg' | 'webgpu') => {
       updateMeta({ renderer: mode });
   };
 
@@ -67,6 +93,27 @@ export default function App() {
       selectNode(nodeId);
       setPropViewMode('ui'); 
       setFocusTarget({ nodeId, propKey, timestamp: Date.now() });
+  };
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    e.dataTransfer.setData('sourceIndex', index.toString());
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    const sourceIndexStr = e.dataTransfer.getData('sourceIndex');
+    if (!sourceIndexStr) return;
+    
+    const sourceIndex = parseInt(sourceIndexStr, 10);
+    if (isNaN(sourceIndex)) return;
+    
+    moveNode(sourceIndex, dropIndex);
   };
 
   const isGraphMode = project.meta.viewMode === 'graph';
@@ -82,19 +129,49 @@ export default function App() {
                 <Layout className="w-5 h-5" />
                 <span>AnimNode</span>
             </div>
+            
+             {/* Simple Hints */}
+             <div className="flex items-center gap-4 text-[10px] text-zinc-600 font-mono ml-4 hidden md:flex">
+                <span>[Space] Play/Pause</span>
+                <span>[V] Select Tool</span>
+                <span>[P] Pen Tool</span>
+            </div>
         </div>
         
-        <div className="flex items-center gap-2">
-             <div className="flex bg-zinc-800 rounded p-0.5 mr-2">
-                <button onClick={() => setRenderer('canvas')} className={`px-2 py-0.5 text-[10px] rounded ${project.meta.renderer === 'canvas' ? 'bg-zinc-600 text-white' : 'text-zinc-500'}`}>Canvas</button>
+        <div className="flex items-center gap-3">
+             <div className="flex bg-zinc-800 rounded p-0.5">
                 <button onClick={() => setRenderer('svg')} className={`px-2 py-0.5 text-[10px] rounded ${project.meta.renderer === 'svg' ? 'bg-zinc-600 text-white' : 'text-zinc-500'}`}>SVG</button>
+                <button onClick={() => setRenderer('webgpu')} className={`px-2 py-0.5 text-[10px] rounded flex items-center gap-1 ${project.meta.renderer === 'webgpu' ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
+                    <Cpu size={10} /> WebGPU
+                </button>
              </div>
-             <button 
-                onClick={handleExportJSON}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded text-xs font-medium flex items-center gap-2 transition-colors"
-             >
-                <Download size={14} /> JSON
-             </button>
+             
+             <div className="h-4 w-px bg-zinc-700" />
+
+             <div className="flex bg-zinc-800 rounded p-0.5 items-center">
+                 <button 
+                    onClick={handleExportJSON}
+                    className="text-zinc-400 hover:text-white hover:bg-zinc-700 px-2 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors"
+                    title="Save Project (JSON)"
+                 >
+                    <FileJson size={14} />
+                 </button>
+                 <div className="w-px h-3 bg-zinc-700 mx-1"></div>
+                 <button 
+                    onClick={handleExportSVG}
+                    className="text-zinc-400 hover:text-white hover:bg-zinc-700 px-2 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors"
+                    title="Export Frame as SVG"
+                 >
+                    <FileImage size={14} />
+                 </button>
+                 <button 
+                    onClick={handleExportPNG}
+                    className="text-zinc-400 hover:text-white hover:bg-zinc-700 px-2 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors"
+                    title="Export Frame as PNG"
+                 >
+                    <Image size={14} />
+                 </button>
+             </div>
         </div>
       </div>
 
@@ -122,16 +199,23 @@ export default function App() {
                 <NodeGraph project={project} onSelect={handleNodeSelect} />
             ) : (
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                    {project.rootNodeIds.map(id => (
+                    {project.rootNodeIds.map((id, index) => ({ id, index })).reverse().map(({ id, index }) => (
                         <div 
                             key={id}
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, index)}
+                            onDragOver={handleDragOver}
+                            onDrop={(e) => handleDrop(e, index)}
                             onClick={() => handleNodeSelect(id, 'ui')}
-                            className={`px-3 py-2 rounded text-sm cursor-pointer flex items-center gap-2 transition-all ${project.selection === id ? 'bg-indigo-900/50 text-indigo-100 border border-indigo-700/50' : 'hover:bg-zinc-800 text-zinc-400 border border-transparent'}`}
+                            className={`px-3 py-2 rounded text-sm cursor-pointer flex items-center gap-2 transition-all group ${project.selection === id ? 'bg-indigo-900/50 text-indigo-100 border border-indigo-700/50' : 'hover:bg-zinc-800 text-zinc-400 border border-transparent'}`}
                         >
+                            <GripVertical size={12} className="text-zinc-600 opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing shrink-0" />
+                            
                             {project.nodes[id].type === 'rect' ? <Square size={12}/> : 
                              project.nodes[id].type === 'circle' ? <Circle size={12}/> :
                              <Layout size={12} className="text-emerald-500"/>}
-                            {project.nodes[id].name}
+                            <span className="truncate flex-1">{project.nodes[id].name}</span>
+                            <span className="text-[10px] text-zinc-600 font-mono shrink-0 opacity-50">{id}</span>
                         </div>
                     ))}
                 </div>
@@ -141,6 +225,8 @@ export default function App() {
         {/* Toolbar - Only visible in Viewport mode */}
         {!isGraphMode && (
              <Toolbar 
+                activeTool={project.meta.activeTool}
+                onSetTool={setTool}
                 onAddNode={addNode} 
                 onAddAudio={() => fileInputRef.current?.click()} 
              />
@@ -153,6 +239,7 @@ export default function App() {
                 onSelect={(id) => id ? handleNodeSelect(id) : selectNode(null)}
                 onUpdate={updateProperty}
                 selection={project.selection}
+                onAddNode={addNode}
              />
         )}
 

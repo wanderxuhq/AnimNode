@@ -36,6 +36,8 @@ export interface AudioState {
   waveform: number[]; // Pre-computed waveform for timeline
 }
 
+export type ToolType = 'select' | 'pen';
+
 export interface ProjectState {
   meta: {
     duration: number; // seconds
@@ -44,8 +46,9 @@ export interface ProjectState {
     height: number;
     currentTime: number;
     isPlaying: boolean;
-    renderer: 'canvas' | 'svg'; // New: Switch between renderers
-    viewMode: 'list' | 'graph'; // New: Switch between Layer List and Node Graph
+    renderer: 'svg' | 'webgpu';
+    viewMode: 'list' | 'graph';
+    activeTool: ToolType; // Added tool state
   };
   audio: AudioState;
   nodes: Record<string, Node>;

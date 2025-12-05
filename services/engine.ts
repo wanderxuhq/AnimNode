@@ -1,5 +1,6 @@
 
 
+
 import { Node, ProjectState, Property } from '../types';
 import { consoleService } from './console';
 import React from 'react';
@@ -279,93 +280,6 @@ export function evaluateProperty(
   }
   
   return prop.value;
-}
-
-/**
- * Renders the project to a Canvas context
- */
-export function renderCanvas(ctx: CanvasRenderingContext2D, project: ProjectState, audioData?: any) {
-  const { width, height } = ctx.canvas;
-  const { currentTime } = project.meta;
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#18181b';
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.save();
-  ctx.translate(width / 2, height / 2);
-
-  // Define evaluation context with getter for links
-  const evalContext: any = { 
-      audio: audioData || {},
-      // The get function allows expressions and links to access other nodes
-      get: (nodeId: string, propKey: string, depth: number = 0) => {
-          const node = project.nodes[nodeId];
-          if (!node) return 0;
-          const prop = node.properties[propKey];
-          // Important: Pass debugInfo for the target property so logs in linked properties are attributed correctly
-          return evaluateProperty(prop, currentTime, evalContext, depth, { nodeId, propKey: propKey });
-      }
-  };
-
-  const renderNode = (nodeId: string) => {
-    const node = project.nodes[nodeId];
-    if (!node) return;
-
-    ctx.save();
-
-    // Helper to evaluate property with debug info
-    const evalProp = (key: string, def: any = 0) => 
-        evaluateProperty(node.properties[key], currentTime, evalContext, 0, { nodeId, propKey: key }) ?? def;
-
-    const x = evalProp('x');
-    const y = evalProp('y');
-    const rotation = evalProp('rotation');
-    const scale = evalProp('scale', 1);
-    const opacity = evalProp('opacity', 1);
-
-    ctx.translate(x, y);
-    ctx.rotate((rotation * Math.PI) / 180);
-    ctx.scale(scale, scale);
-    ctx.globalAlpha = opacity;
-    
-    const fill = evalProp('fill', 'transparent');
-    ctx.fillStyle = fill;
-
-    if (node.type === 'rect') {
-      const w = evalProp('width', 100);
-      const h = evalProp('height', 100);
-      ctx.fillRect(-w / 2, -h / 2, w, h);
-    } else if (node.type === 'circle') {
-      const r = evalProp('radius', 50);
-      ctx.beginPath();
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (node.type === 'vector') {
-      const d = evalProp('d', '');
-      const stroke = evalProp('stroke', 'transparent');
-      const strokeWidth = evalProp('strokeWidth', 0);
-      
-      if (d) {
-        try {
-            const p = new Path2D(d);
-            if (fill !== 'transparent') ctx.fill(p);
-            if (stroke !== 'transparent' && strokeWidth > 0) {
-                ctx.strokeStyle = stroke;
-                ctx.lineWidth = strokeWidth;
-                ctx.stroke(p);
-            }
-        } catch(e) {
-            // Ignore invalid path data during render to prevent crash
-        }
-      }
-    }
-
-    ctx.restore();
-  };
-
-  project.rootNodeIds.forEach(renderNode);
-  ctx.restore();
 }
 
 /**

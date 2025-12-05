@@ -71,8 +71,8 @@ export const createNode = (type: 'rect' | 'circle' | 'vector', id?: string): Nod
       parentId: null,
       properties: {
         ...baseProps,
-        // Default star shape
-        d: { ...createProp('Path Data', 'string', 'M 0 -50 L 14 -15 L 50 -15 L 20 10 L 30 50 L 0 30 L -30 50 L -20 10 L -50 -15 L -14 -15 Z'), mode: 'static' as const, expression: 'return "M 0 -50 L 14 -15 L 50 -15 L 20 10 L 30 50 L 0 30 L -30 50 L -20 10 L -50 -15 L -14 -15 Z";' },
+        // Start with empty path instead of star
+        d: { ...createProp('Path Data', 'string', ''), mode: 'static' as const, expression: 'return "";' },
         fill: { ...createProp('Fill Color', 'color', 'transparent'), mode: 'static' as const, expression: 'return "transparent";' },
         stroke: { ...createProp('Stroke Color', 'color', '#10b981'), mode: 'static' as const, expression: 'return "#10b981";' },
         strokeWidth: { ...createProp('Stroke Width', 'number', 2), mode: 'static' as const, expression: 'return 2;' },

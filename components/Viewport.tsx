@@ -1,75 +1,245 @@
+
 import React, { useRef, useEffect, useState } from 'react';
-import { ProjectState } from '../types';
-import { renderCanvas, renderSVG, evaluateProperty } from '../services/engine';
+import { ProjectState, Node } from '../types';
+import { renderSVG, evaluateProperty } from '../services/engine';
 import { audioController } from '../services/audio';
+import { webgpuRenderer } from '../services/webgpu';
+import { Zap, Cpu, Layers, Activity } from 'lucide-react';
+import { PathPoint, pointsToSvgPath, svgPathToPoints } from '../services/path';
+import { createNode } from '../services/factory';
 
 interface ViewportProps {
   projectRef: React.MutableRefObject<ProjectState>;
   onSelect: (id: string | null) => void;
   onUpdate: (id: string, propKey: string, updates: any) => void;
   selection: string | null;
+  onAddNode: (type: 'rect' | 'circle' | 'vector') => string; // Now returns ID
 }
 
-// Helper: Inverse transform point from World to Local Node space
-// This handles rotation and scale to check if a point is inside a shape
+// Helper to convert hex to normalized rgb
+const hexToRgb = (hex: string) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? [
+        parseInt(result[1], 16) / 255,
+        parseInt(result[2], 16) / 255,
+        parseInt(result[3], 16) / 255,
+        1
+    ] : [1, 0, 1, 1];
+};
+
+// Helper: Transform Point
 function transformPointToLocal(
     px: number, py: number, 
     nx: number, ny: number, 
     rotationDeg: number, 
     scale: number
 ) {
-    // 1. Translate
     let dx = px - nx;
     let dy = py - ny;
-
-    // 2. Rotate (Inverse)
     const rad = (-rotationDeg * Math.PI) / 180;
     const rx = dx * Math.cos(rad) - dy * Math.sin(rad);
     const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
-
-    // 3. Scale (Inverse)
     return { x: rx / scale, y: ry / scale };
 }
 
-export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpdate, selection }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+// Helper: Transform Point Local -> World (for gizmo rendering)
+function transformPointToWorld(
+    lx: number, ly: number,
+    nx: number, ny: number, 
+    rotationDeg: number, 
+    scale: number
+) {
+    const rad = (rotationDeg * Math.PI) / 180;
+    const sLx = lx * scale;
+    const sLy = ly * scale;
+    const wx = sLx * Math.cos(rad) - sLy * Math.sin(rad);
+    const wy = sLx * Math.sin(rad) + sLy * Math.cos(rad);
+    return { x: wx + nx, y: wy + ny };
+}
+
+export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpdate, selection, onAddNode }) => {
+  // Separate refs for different contexts to avoid getContext conflicts
+  const canvasWebGpuRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  
   const rAF = useRef<number>(0);
   const [svgContent, setSvgContent] = useState<React.ReactNode>(null);
-  const [rendererMode, setRendererMode] = useState<'canvas' | 'svg'>('canvas');
+  const [rendererMode, setRendererMode] = useState<'svg' | 'webgpu'>('webgpu');
+  const [gpuReady, setGpuReady] = useState(false);
   
-  // Interaction State
+  // Stats
+  const [realFps, setRealFps] = useState(0);
+  const [instanceCount, setInstanceCount] = useState(0);
+  
+  // Interaction State - SELECT TOOL
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   
+  // Interaction State - PEN TOOL & VECTOR EDITING
+  const [pathPoints, setPathPoints] = useState<PathPoint[]>([]);
+  const [isPathClosed, setIsPathClosed] = useState(false);
+  const [editingPathId, setEditingPathId] = useState<string | null>(null);
+  const [dragPointIndex, setDragPointIndex] = useState<number | null>(null);
+  const [dragHandleType, setDragHandleType] = useState<'none' | 'in' | 'out'>('none');
+  const [penDragStart, setPenDragStart] = useState<{x:number, y:number} | null>(null);
+  const [hoverStartPoint, setHoverStartPoint] = useState(false); // For close path UI
+
   // Force re-render for Gizmo updates
   const [tick, setTick] = useState(0); 
 
-  // Sync internal mode state
+  // Sync internal mode state & Init WebGPU
   useEffect(() => {
-    setRendererMode(projectRef.current.meta.renderer);
+    const newMode = projectRef.current.meta.renderer;
+    setRendererMode(newMode);
+    
+    // Initialize WebGPU if selected and not ready
+    if (newMode === 'webgpu' && !gpuReady && canvasWebGpuRef.current) {
+        webgpuRenderer.init(canvasWebGpuRef.current).then((success) => {
+            if(success) {
+                setGpuReady(true);
+            } else {
+                console.error("Failed to init WebGPU");
+                setGpuReady(false);
+            }
+        });
+    }
   }, [projectRef.current.meta.renderer]);
 
-  // Render Loop
+  // Sync Path Points from Node when selection changes
+  // NOW: We load points whenever a Vector is selected, regardless of tool
   useEffect(() => {
+      if (selection) {
+          const node = projectRef.current.nodes[selection];
+          if (node && node.type === 'vector') {
+              setEditingPathId(selection);
+              const d = node.properties.d.value as string;
+              const { points, closed } = svgPathToPoints(d);
+              setPathPoints(points);
+              setIsPathClosed(closed);
+              return;
+          }
+      }
+      
+      // Clear if deselected or not a vector
+      if (!selection || (projectRef.current.nodes[selection]?.type !== 'vector')) {
+        setEditingPathId(null);
+        setPathPoints([]);
+        setIsPathClosed(false);
+      }
+
+  }, [selection]); // Removed activeTool dependency to allow Select tool editing
+
+
+  // Render Loop (The Scheduler)
+  useEffect(() => {
+    let frameCount = 0;
+    let lastTime = performance.now();
+
     const loop = () => {
+      const now = performance.now();
+      frameCount++;
+      
+      // Update FPS every second
+      if (now - lastTime >= 1000) {
+          setRealFps(frameCount);
+          frameCount = 0;
+          lastTime = now;
+      }
+
       const project = projectRef.current;
       const audioData = audioController.getAudioData();
 
-      if (project.meta.renderer === 'canvas') {
-        if (canvasRef.current) {
-          const ctx = canvasRef.current.getContext('2d');
-          if (ctx) {
-            renderCanvas(ctx, project, audioData);
+      // --- LAYER 1: Scheduling & UX (Handled by JS loop) ---
+      // --- LAYER 2: Data Preparation ---
+
+      if (project.meta.renderer === 'webgpu' && gpuReady && canvasWebGpuRef.current) {
+          const nodes = project.rootNodeIds;
+          const count = nodes.length;
+          setInstanceCount(count);
+
+          const floatCount = count * 10; // 10 floats per instance
+          const data = new Float32Array(floatCount);
+          
+          const evalContext: any = { 
+            audio: audioData || {},
+            get: (nodeId: string, propKey: string, depth: number = 0) => {
+                const node = project.nodes[nodeId];
+                if (!node) return 0;
+                const prop = node.properties[propKey];
+                return evaluateProperty(prop, project.meta.currentTime, evalContext, depth, { nodeId, propKey });
+            }
+          };
+
+          let index = 0;
+          for(const id of nodes) {
+              const node = project.nodes[id];
+              if(!node) continue;
+              
+              const v = (key: string, def: any) => 
+                  evaluateProperty(node.properties[key], project.meta.currentTime, evalContext, 0, {nodeId: id, propKey: key}) ?? def;
+
+              const x = Number(v('x', 0));
+              const y = Number(v('y', 0)); 
+              const rot = Number(v('rotation', 0));
+              const scale = Number(v('scale', 1));
+              const opacity = Number(v('opacity', 1));
+              
+              let w = 100, h = 100, type = 0, color = [1,1,1,1];
+              
+              const fillHex = String(v('fill', '#ffffff'));
+              const rgb = hexToRgb(fillHex);
+              color = [rgb[0], rgb[1], rgb[2], opacity];
+
+              if (node.type === 'rect') {
+                  w = Number(v('width', 100)) * scale;
+                  h = Number(v('height', 100)) * scale;
+                  type = 0;
+              } else if (node.type === 'circle') {
+                  const r = Number(v('radius', 50));
+                  w = r * 2 * scale;
+                  h = r * 2 * scale;
+                  type = 1;
+              } else if (node.type === 'vector') {
+                  // WebGPU doesn't support vector yet
+                  type = -1; 
+              }
+
+              const offset = index * 10;
+              data[offset + 0] = x;
+              data[offset + 1] = y;
+              data[offset + 2] = w;
+              data[offset + 3] = h;
+              data[offset + 4] = rot;
+              data[offset + 5] = color[0];
+              data[offset + 6] = color[1];
+              data[offset + 7] = color[2];
+              data[offset + 8] = color[3];
+              data[offset + 9] = type;
+
+              index++;
           }
-        }
-      } else {
-        setSvgContent(renderSVG(project, audioData));
+
+          // --- LAYER 3: GPU Rendering ---
+          // Pass the canvas element so the renderer can check for resize events
+          webgpuRenderer.render(
+              data, 
+              count, 
+              project.meta.width, 
+              project.meta.height, 
+              canvasWebGpuRef.current
+          );
+
+      } 
+      
+      // Always render SVG for previews/vectors
+      const svgTree = renderSVG(project, audioData);
+      setSvgContent(svgTree);
+
+      if (project.meta.renderer === 'svg') {
+         setInstanceCount(project.rootNodeIds.length);
       }
       
-      // Update tick to refresh Gizmo position
       setTick(t => t + 1);
-      
       rAF.current = requestAnimationFrame(loop);
     };
     
@@ -77,7 +247,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
     return () => {
       if (rAF.current) cancelAnimationFrame(rAF.current);
     };
-  }, []);
+  }, [gpuReady]);
 
   // --- INTERACTION LOGIC ---
 
@@ -86,57 +256,273 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const rect = containerRef.current.getBoundingClientRect();
       const clientX = e.clientX - rect.left;
       const clientY = e.clientY - rect.top;
-      
-      // Center origin
       return {
           x: clientX - rect.width / 2,
           y: clientY - rect.height / 2
       };
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-      const { x: wx, y: wy } = getMouseWorldPos(e);
+  // Shared Hit Testing Logic for Points
+  const hitTestPathPoints = (wx: number, wy: number, node: Node, points: PathPoint[]) => {
+      const project = projectRef.current;
+      const dummyCtx = { audio: {}, get: () => 0 }; 
+      const nx = evaluateProperty(node.properties.x, project.meta.currentTime, dummyCtx) as number;
+      const ny = evaluateProperty(node.properties.y, project.meta.currentTime, dummyCtx) as number;
+      const rot = evaluateProperty(node.properties.rotation, project.meta.currentTime, dummyCtx) as number;
+      const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, dummyCtx) as number;
+
+      const lx = transformPointToLocal(wx, wy, nx, ny, rot, scale).x;
+      const ly = transformPointToLocal(wx, wy, nx, ny, rot, scale).y;
+
+      const HIT_RADIUS = 10 / scale;
+      let hitIndex = -1;
+      let handleType: 'none' | 'in' | 'out' = 'none';
+
+      for(let i=0; i<points.length; i++) {
+          const p = points[i];
+          // Check Point
+          if (Math.hypot(p.x - lx, p.y - ly) < HIT_RADIUS) {
+              hitIndex = i;
+              handleType = 'none';
+              break;
+          }
+          // Check In Handle
+          if (Math.hypot((p.x + p.inX) - lx, (p.y + p.inY) - ly) < HIT_RADIUS) {
+              hitIndex = i;
+              handleType = 'in';
+              break;
+          }
+          // Check Out Handle
+          if (Math.hypot((p.x + p.outX) - lx, (p.y + p.outY) - ly) < HIT_RADIUS) {
+              hitIndex = i;
+              handleType = 'out';
+              break;
+          }
+      }
+      return { hitIndex, handleType, lx, ly };
+  };
+
+  // --- PEN TOOL HANDLERS ---
+  const handlePenDown = (e: React.MouseEvent, wx: number, wy: number) => {
+      
+      // 1. If not editing a path, create a NEW one
+      if (!editingPathId) {
+          const newId = onAddNode('vector');
+          
+          // Pre-calculate the first point data immediately
+          const newPoint: PathPoint = {
+              x: wx, y: wy,
+              inX: 0, inY: 0,
+              outX: 0, outY: 0,
+              cmd: 'M'
+          };
+          const newPoints = [newPoint];
+          const d = pointsToSvgPath(newPoints, false);
+
+          // Update Data Model FIRST
+          // This ensures the Ref has the correct 'd' value before Selection triggers state sync
+          onUpdate(newId, 'd', { value: d });
+
+          setEditingPathId(newId);
+          setPathPoints(newPoints);
+          setIsPathClosed(false); // NEW PATH IS OPEN
+          setDragPointIndex(0);
+          setDragHandleType('out'); 
+          setPenDragStart({ x: wx, y: wy });
+
+          // Trigger Selection last
+          onSelect(newId); 
+          return;
+      }
+
+      const project = projectRef.current;
+      const node = project.nodes[editingPathId];
+      if (!node) return; 
+
+      const { hitIndex, handleType, lx, ly } = hitTestPathPoints(wx, wy, node, pathPoints);
+
+      if (hitIndex !== -1) {
+          // Clicked existing point/handle
+          if (handleType === 'none' && hitIndex === 0 && pathPoints.length > 2) {
+              // Clicked Start Point -> Close Path
+              const newPoints = [...pathPoints];
+              const d = pointsToSvgPath(newPoints, true); // true = closed
+              onUpdate(editingPathId, 'd', { value: d });
+              setPathPoints(svgPathToPoints(d).points); 
+              setIsPathClosed(true); // Mark as closed
+              return;
+          } else {
+              setDragPointIndex(hitIndex);
+              setDragHandleType(handleType);
+              setPenDragStart({ x: lx, y: ly });
+          }
+      } else {
+          // Clicked empty space -> Add new Point
+          const newPoint: PathPoint = {
+              x: lx, y: ly,
+              inX: 0, inY: 0,
+              outX: 0, outY: 0,
+              cmd: pathPoints.length === 0 ? 'M' : 'L' 
+          };
+          
+          const newPoints = [...pathPoints, newPoint];
+          setPathPoints(newPoints);
+          setDragPointIndex(newPoints.length - 1);
+          setDragHandleType('out');
+          setPenDragStart({ x: lx, y: ly });
+          
+          // Use current closed state to allow expanding a polygon if needed
+          const d = pointsToSvgPath(newPoints, isPathClosed);
+          onUpdate(editingPathId, 'd', { value: d });
+      }
+  };
+
+  // Unified Handler for moving points (Used by Pen and Select tools)
+  const handlePointDragMove = (e: React.MouseEvent, wx: number, wy: number) => {
       const project = projectRef.current;
       
-      // Hit Testing (Reverse order: Top nodes first)
+      if (editingPathId && pathPoints.length > 2 && dragPointIndex === null) {
+          // Update Hover logic for Close Path hint (Pen tool only really needs this, but harmless)
+          const node = project.nodes[editingPathId];
+          if(node) {
+             const { lx, ly } = hitTestPathPoints(wx, wy, node, []); // Just get local coords
+             const startP = pathPoints[0];
+             const dummyCtx = { audio: {}, get: () => 0 }; 
+             const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, dummyCtx) as number;
+             const HIT_RADIUS = 12 / scale;
+             const dist = Math.hypot(startP.x - lx, startP.y - ly);
+             setHoverStartPoint(dist < HIT_RADIUS);
+          }
+      } else {
+          setHoverStartPoint(false);
+      }
+
+      if (dragPointIndex === null || !editingPathId || !penDragStart) return;
+
+      const node = project.nodes[editingPathId];
+      if (!node) return;
+      
+      // Get local coords
+      const { lx, ly } = hitTestPathPoints(wx, wy, node, []);
+
+      const newPoints = [...pathPoints];
+      const p = { ...newPoints[dragPointIndex] };
+
+      if (dragHandleType === 'none') {
+          p.x = lx; 
+          p.y = ly;
+      } else if (dragHandleType === 'out') {
+          p.outX = lx - p.x;
+          p.outY = ly - p.y;
+          p.inX = -p.outX;
+          p.inY = -p.outY;
+          p.cmd = 'C'; 
+      } else if (dragHandleType === 'in') {
+          p.inX = lx - p.x;
+          p.inY = ly - p.y;
+          p.outX = -p.inX;
+          p.outY = -p.inY;
+          p.cmd = 'C';
+      }
+
+      newPoints[dragPointIndex] = p;
+      setPathPoints(newPoints);
+      
+      // Pass the persisted isPathClosed state to ensure it stays closed during edits
+      const d = pointsToSvgPath(newPoints, isPathClosed);
+      onUpdate(editingPathId, 'd', { value: d });
+  };
+
+  const handlePenUp = () => {
+      setDragPointIndex(null);
+      setDragHandleType('none');
+      setPenDragStart(null);
+  };
+
+
+  // --- MAIN HANDLERS ---
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+      const { x: wx, y: wy } = getMouseWorldPos(e);
+      const activeTool = projectRef.current.meta.activeTool;
+
+      if (activeTool === 'pen') {
+          handlePenDown(e, wx, wy);
+          return;
+      }
+
+      // SELECT TOOL LOGIC
+      const project = projectRef.current;
+      
+      // 1. If we have a vector selected, check if we are clicking its points first
+      if (selection && project.nodes[selection]?.type === 'vector') {
+          const node = project.nodes[selection];
+          const { hitIndex, handleType, lx, ly } = hitTestPathPoints(wx, wy, node, pathPoints);
+          
+          if (hitIndex !== -1) {
+              // Direct Vertex Editing with Select Tool!
+              setDragPointIndex(hitIndex);
+              setDragHandleType(handleType);
+              setPenDragStart({ x: lx, y: ly });
+              // Do NOT set isDragging (Object Drag)
+              return;
+          }
+      }
+
+      // 2. Normal Object Hit Test
       const nodes = [...project.rootNodeIds].reverse();
       let hitId: string | null = null;
-
-      // Eval context for checking current positions
       const dummyCtx = { audio: {}, get: () => 0 }; 
 
       for (const id of nodes) {
           const node = project.nodes[id];
-          
-          // Get current evaluated transform
           const nx = evaluateProperty(node.properties.x, project.meta.currentTime, dummyCtx) as number;
           const ny = evaluateProperty(node.properties.y, project.meta.currentTime, dummyCtx) as number;
           const rot = evaluateProperty(node.properties.rotation, project.meta.currentTime, dummyCtx) as number;
           const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, dummyCtx) as number;
           
           const local = transformPointToLocal(wx, wy, nx, ny, rot, scale);
-
           let isHit = false;
+
           if (node.type === 'rect') {
               const w = evaluateProperty(node.properties.width, project.meta.currentTime, dummyCtx) as number;
               const h = evaluateProperty(node.properties.height, project.meta.currentTime, dummyCtx) as number;
-              if (local.x >= -w/2 && local.x <= w/2 && local.y >= -h/2 && local.y <= h/2) {
-                  isHit = true;
-              }
+              if (local.x >= -w/2 && local.x <= w/2 && local.y >= -h/2 && local.y <= h/2) isHit = true;
           } else if (node.type === 'circle') {
               const r = evaluateProperty(node.properties.radius, project.meta.currentTime, dummyCtx) as number;
               const dist = Math.sqrt(local.x*local.x + local.y*local.y);
               if (dist <= r) isHit = true;
           } else if (node.type === 'vector') {
-              // Simple bounding box approximation for vector for now
-              if (Math.abs(local.x) < 50 && Math.abs(local.y) < 50) isHit = true;
+              // ACCURATE VECTOR HIT TESTING
+              const d = evaluateProperty(node.properties.d, project.meta.currentTime, dummyCtx) as string;
+              // We need to parse this to check bounding box
+              // NOTE: This is slightly expensive, but fine for mouse clicks (not 60fps loop)
+              const { points } = svgPathToPoints(d);
+              
+              if (points.length === 0) {
+                   // Empty vector (e.g. just created), allow clicking origin
+                   if (Math.abs(local.x) < 20 && Math.abs(local.y) < 20) isHit = true;
+              } else {
+                   // Calculate BBox
+                   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                   for(const p of points) {
+                       if (p.x < minX) minX = p.x;
+                       if (p.x > maxX) maxX = p.x;
+                       if (p.y < minY) minY = p.y;
+                       if (p.y > maxY) maxY = p.y;
+                   }
+                   
+                   // Add generous padding for thin lines
+                   const pad = 10 / scale;
+                   if (local.x >= minX - pad && local.x <= maxX + pad && 
+                       local.y >= minY - pad && local.y <= maxY + pad) {
+                       isHit = true;
+                   }
+              }
           }
 
           if (isHit) {
               hitId = id;
-              
-              // Calculate drag offset (Where inside the shape did we click?)
-              // We want to maintain this offset relative to the center
               setDragOffset({ x: wx - nx, y: wy - ny });
               break;
           }
@@ -151,79 +537,138 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-      if (!isDragging || !selection) return;
-
       const { x: wx, y: wy } = getMouseWorldPos(e);
-      const node = projectRef.current.nodes[selection];
+      const activeTool = projectRef.current.meta.activeTool;
+
+      // Handle Point Dragging (Works for both Pen and Select tools now)
+      if (dragPointIndex !== null) {
+          handlePointDragMove(e, wx, wy);
+          return;
+      }
       
-      // Apply offset so the node doesn't snap its center to the mouse
+      // Pen Tool (Creating new points, hovering)
+      if (activeTool === 'pen') {
+          handlePointDragMove(e, wx, wy); // Reuse logic for hover hints
+          return;
+      }
+
+      // SELECT TOOL Object Dragging
+      if (!isDragging || !selection) return;
       const targetX = wx - dragOffset.x;
       const targetY = wy - dragOffset.y;
-
-      // Only update if property is capable of accepting values
-      // If it's pure code, this updates the underlying value, but expression might override it.
       onUpdate(selection, 'x', { value: targetX });
       onUpdate(selection, 'y', { value: targetY });
   };
 
   const handleMouseUp = () => {
+      const activeTool = projectRef.current.meta.activeTool;
+      
+      // Clear point drag state (works for both tools)
+      if (dragPointIndex !== null) {
+          handlePenUp();
+          return;
+      }
+      
       setIsDragging(false);
   };
 
-  // --- GIZMO RENDERER ---
-  // Renders a box around the selected item
+  // --- RENDER GIZMOS ---
+
   const renderGizmo = () => {
       if (!selection) return null;
       const project = projectRef.current;
       const node = project.nodes[selection];
       if (!node) return null;
+      
+      const isVector = node.type === 'vector';
+      // Use Point Editor for Pen Tool OR ANY time a Vector is selected
+      const showPointEditor = project.meta.activeTool === 'pen' || isVector;
+      const showBoundingBox = !isVector; // Hide bounding box for vectors
 
       const dummyCtx = { audio: {}, get: () => 0 }; 
       const t = project.meta.currentTime;
 
-      // Get current Visual State
       const x = evaluateProperty(node.properties.x, t, dummyCtx) as number;
       const y = evaluateProperty(node.properties.y, t, dummyCtx) as number;
       const rot = evaluateProperty(node.properties.rotation, t, dummyCtx) as number;
       const scale = evaluateProperty(node.properties.scale, t, dummyCtx) as number;
       
-      let width = 100;
-      let height = 100;
-
+      let width = 100, height = 100;
       if (node.type === 'rect') {
           width = evaluateProperty(node.properties.width, t, dummyCtx) as number;
           height = evaluateProperty(node.properties.height, t, dummyCtx) as number;
       } else if (node.type === 'circle') {
           const r = evaluateProperty(node.properties.radius, t, dummyCtx) as number;
-          width = r * 2;
-          height = r * 2;
+          width = r * 2; height = r * 2;
       }
 
-      // Convert Center Center to Top Left for SVG Rect
       const transform = `translate(${x}, ${y}) rotate(${rot}) scale(${scale})`;
 
       return (
           <g transform={`translate(${project.meta.width/2}, ${project.meta.height/2})`}>
               <g transform={transform}>
-                  {/* Bounding Box */}
-                  <rect 
-                      x={-width/2} 
-                      y={-height/2} 
-                      width={width} 
-                      height={height} 
-                      fill="none" 
-                      stroke="#3b82f6" 
-                      strokeWidth={2 / scale} // Keep stroke constant visually
-                      strokeDasharray="4 2"
-                  />
-                  {/* Center Point */}
-                  <circle cx={0} cy={0} r={4 / scale} fill="#3b82f6" />
-                  
-                  {/* Corner Handles (Visual only for now) */}
-                  <rect x={-width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                  <rect x={width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                  <rect x={width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                  <rect x={-width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                  {/* Bounding Box Gizmo */}
+                  {showBoundingBox && (
+                    <>
+                        <rect x={-width/2} y={-height/2} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
+                        
+                        {/* Corners */}
+                        <rect x={-width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                        <rect x={width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                        <rect x={width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                        <rect x={-width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    </>
+                  )}
+
+                  {/* PATH EDITOR OVERLAY */}
+                  {showPointEditor && (
+                      <g className="pen-editor-overlay">
+                          {/* Draw Control Lines */}
+                          {pathPoints.map((p, i) => (
+                              <g key={i}>
+                                  {/* Incoming Handle Line */}
+                                  {(p.inX !== 0 || p.inY !== 0) && (
+                                      <line x1={p.x} y1={p.y} x2={p.x + p.inX} y2={p.y + p.inY} stroke="#3b82f6" strokeWidth={1/scale} />
+                                  )}
+                                  {/* Outgoing Handle Line */}
+                                  {(p.outX !== 0 || p.outY !== 0) && (
+                                      <line x1={p.x} y1={p.y} x2={p.x + p.outX} y2={p.y + p.outY} stroke="#3b82f6" strokeWidth={1/scale} />
+                                  )}
+                              </g>
+                          ))}
+                          
+                          {/* Draw Knots */}
+                          {pathPoints.map((p, i) => {
+                             const isStart = i === 0;
+                             const showCloseHint = isStart && hoverStartPoint && pathPoints.length > 2;
+
+                             return (
+                              <g key={i}>
+                                  {/* Main Anchor */}
+                                  <circle 
+                                    cx={p.x} cy={p.y} 
+                                    r={showCloseHint ? (8/scale) : (4/scale)} 
+                                    fill={isStart && pathPoints.length > 0 ? "#10b981" : "white"} 
+                                    stroke="#3b82f6" 
+                                    strokeWidth={2/scale} 
+                                    style={{ transition: 'all 0.2s' }}
+                                  />
+                                  {/* Close Path Hint Ring */}
+                                  {showCloseHint && (
+                                     <circle cx={p.x} cy={p.y} r={12/scale} fill="none" stroke="#10b981" strokeWidth={2/scale} opacity={0.5} />
+                                  )}
+                                  
+                                  {/* Handles */}
+                                  {(p.inX !== 0 || p.inY !== 0) && (
+                                      <circle cx={p.x + p.inX} cy={p.y + p.inY} r={3/scale} fill="#3b82f6" />
+                                  )}
+                                  {(p.outX !== 0 || p.outY !== 0) && (
+                                      <circle cx={p.x + p.outX} cy={p.y + p.outY} r={3/scale} fill="#3b82f6" />
+                                  )}
+                              </g>
+                          )})}
+                      </g>
+                  )}
               </g>
           </g>
       );
@@ -231,44 +676,66 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
   return (
     <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
-        <div className="absolute top-4 left-4 text-xs font-mono text-zinc-600 z-10 pointer-events-none select-none">
-            {rendererMode.toUpperCase()} Output ({projectRef.current.meta.width}x{projectRef.current.meta.height})
+        {/* HUD / Stats Overlay */}
+        <div className="absolute top-4 right-4 bg-zinc-900/90 backdrop-blur border border-zinc-700/50 p-4 rounded-lg z-30 flex flex-col gap-3 shadow-2xl pointer-events-none select-none min-w-[200px]">
+          <div className="flex items-center gap-2 border-b border-zinc-700/50 pb-2">
+             {rendererMode === 'webgpu' ? <Zap className="text-yellow-400 fill-yellow-400/20" size={16} /> : <Cpu className="text-blue-400" size={16} />}
+             <span className={`font-bold text-xs uppercase tracking-wider ${rendererMode === 'webgpu' ? 'text-yellow-100' : 'text-zinc-200'}`}>
+                 {rendererMode === 'webgpu' ? 'GPU Accelerated' : 'SVG DOM'}
+             </span>
+          </div>
+          
+          <div className="space-y-1">
+            <div className="flex justify-between gap-4 text-xs font-mono text-zinc-400">
+                <span className="flex items-center gap-1.5"><Activity size={10}/> FPS</span>
+                <span className={`font-bold ${realFps < 30 ? 'text-red-400' : 'text-emerald-400'}`}>{realFps}</span>
+            </div>
+            <div className="flex justify-between gap-4 text-xs font-mono text-zinc-400">
+                <span className="flex items-center gap-1.5"><Layers size={10}/> Objects</span>
+                <span className="text-zinc-200">{instanceCount}</span>
+            </div>
+             <div className="flex justify-between gap-4 text-xs font-mono text-zinc-400">
+                <span>Tool</span>
+                <span className="text-zinc-200 uppercase">{projectRef.current.meta.activeTool}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="absolute top-4 left-4 text-xs font-mono text-zinc-700 z-10 pointer-events-none select-none">
+            OUTPUT_VIEWPORT
         </div>
         
         <div 
             ref={containerRef}
-            className="relative shadow-2xl border border-zinc-800 bg-zinc-900 overflow-hidden cursor-crosshair"
-            // Explicit dimensions to prevent collapse since children are absolute
-            style={{ 
-                width: projectRef.current.meta.width, 
-                height: projectRef.current.meta.height 
-            }}
+            className={`relative shadow-2xl border border-zinc-800 bg-zinc-900 overflow-hidden ${projectRef.current.meta.activeTool === 'pen' ? 'cursor-crosshair' : 'cursor-default'}`}
+            style={{ width: projectRef.current.meta.width, height: projectRef.current.meta.height }}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
         >
-             {/* 1. Rendering Layer */}
+            {/* 1. WebGPU Layer */}
              <canvas 
-                ref={canvasRef} 
+                ref={canvasWebGpuRef} 
                 width={projectRef.current.meta.width} 
                 height={projectRef.current.meta.height}
-                className={`absolute inset-0 pointer-events-none ${rendererMode === 'canvas' ? 'block' : 'hidden'}`}
+                className={`absolute inset-0 pointer-events-none ${rendererMode === 'webgpu' ? 'block' : 'hidden'}`}
                 style={{ width: '100%', height: '100%' }}
             />
+
+            {/* 2. SVG Renderer Layer (Vectors show here even in WebGPU mode for now) */}
             <div 
-              className={`absolute inset-0 pointer-events-none ${rendererMode === 'svg' ? 'block' : 'hidden'}`}
+              className={`absolute inset-0 pointer-events-none block`}
               style={{ width: '100%', height: '100%' }}
             >
               {svgContent}
             </div>
 
-            {/* 2. Interaction & Gizmo Layer (SVG Overlay) */}
+            {/* 3. Gizmo / Interaction Overlay (SVG) */}
             <svg 
                 className="absolute inset-0 w-full h-full pointer-events-none z-20"
                 viewBox={`0 0 ${projectRef.current.meta.width} ${projectRef.current.meta.height}`}
             >
-                {/* We render the Gizmo here. Pointer events are handled by the parent div events, visual only here */}
                 {renderGizmo()}
             </svg>
         </div>

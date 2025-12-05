@@ -1,6 +1,6 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { ProjectState, Property, Node } from '../types';
+import { ProjectState, Property, Node, ToolType } from '../types';
 import { INITIAL_PROJECT } from '../constants';
 import { createNode } from '../services/factory';
 import { audioController } from '../services/audio';
@@ -47,26 +47,34 @@ export function useProject() {
     setProject(nextProject);
   }, []);
 
-  const addNode = useCallback((type: 'rect' | 'circle') => {
-    setProject(prev => {
-        // Generate a friendly, unique ID (e.g., rect_0, rect_1)
-        let index = 0;
-        let newId = `${type}_${index}`;
-        while (prev.nodes[newId]) {
-            index++;
-            newId = `${type}_${index}`;
-        }
+  const addNode = useCallback((type: 'rect' | 'circle' | 'vector') => {
+    const prev = projectRef.current;
+    
+    // Generate a friendly, unique ID (e.g., rect_0, rect_1)
+    let index = 0;
+    let newId = `${type}_${index}`;
+    while (prev.nodes[newId]) {
+        index++;
+        newId = `${type}_${index}`;
+    }
 
-        const newNode = createNode(type, newId);
-        const next = {
-            ...prev,
-            nodes: { ...prev.nodes, [newNode.id]: newNode },
-            rootNodeIds: [...prev.rootNodeIds, newNode.id],
-            selection: newNode.id
-        };
-        projectRef.current = next;
-        return next;
-    });
+    const newNode = createNode(type, newId);
+    
+    // Create new state
+    const next = {
+        ...prev,
+        nodes: { ...prev.nodes, [newNode.id]: newNode },
+        rootNodeIds: [...prev.rootNodeIds, newNode.id],
+        selection: newNode.id
+    };
+
+    // Update Ref synchronously so callers can use the new data immediately
+    projectRef.current = next;
+    
+    // Trigger Render
+    setProject(next);
+
+    return newNode.id;
   }, []);
 
   const renameNode = useCallback((oldId: string, newId: string) => {
@@ -156,6 +164,21 @@ export function useProject() {
     });
   }, []);
 
+  const moveNode = useCallback((fromIndex: number, toIndex: number) => {
+    setProject(p => {
+        if (fromIndex === toIndex) return p;
+        if (fromIndex < 0 || fromIndex >= p.rootNodeIds.length || toIndex < 0 || toIndex >= p.rootNodeIds.length) return p;
+
+        const newRoots = [...p.rootNodeIds];
+        const [moved] = newRoots.splice(fromIndex, 1);
+        newRoots.splice(toIndex, 0, moved);
+        
+        const next = { ...p, rootNodeIds: newRoots };
+        projectRef.current = next;
+        return next;
+    });
+  }, []);
+
   const togglePlay = useCallback(() => {
     setProject(p => {
         const isPlaying = !p.meta.isPlaying;
@@ -180,6 +203,14 @@ export function useProject() {
         projectRef.current = next;
         return next;
     });
+  }, []);
+  
+  const setTool = useCallback((tool: ToolType) => {
+      setProject(p => {
+          const next = { ...p, meta: { ...p.meta, activeTool: tool } };
+          projectRef.current = next;
+          return next;
+      });
   }, []);
 
   // Animation Loop
@@ -228,7 +259,9 @@ export function useProject() {
     addNode,
     renameNode,
     selectNode,
+    moveNode,
     togglePlay,
-    setTime
+    setTime,
+    setTool
   };
 }
