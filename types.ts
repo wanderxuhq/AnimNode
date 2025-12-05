@@ -1,7 +1,8 @@
 
+
 // This defines the "File Format" structure
 
-export type ValueType = 'number' | 'color' | 'vector2' | 'boolean';
+export type ValueType = 'number' | 'color' | 'vector2' | 'boolean' | 'string';
 
 export interface Keyframe {
   time: number; // in seconds
@@ -23,7 +24,7 @@ export interface Property {
 export interface Node {
   id: string;
   name: string;
-  type: 'rect' | 'circle' | 'text' | 'group';
+  type: 'rect' | 'circle' | 'text' | 'group' | 'vector';
   parentId: string | null;
   properties: Record<string, Property>;
 }

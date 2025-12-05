@@ -1,3 +1,5 @@
+
+
 import { Node, ProjectState, Property } from '../types';
 import { consoleService } from './console';
 import React from 'react';
@@ -320,12 +322,14 @@ export function renderCanvas(ctx: CanvasRenderingContext2D, project: ProjectStat
     const y = evalProp('y');
     const rotation = evalProp('rotation');
     const scale = evalProp('scale', 1);
+    const opacity = evalProp('opacity', 1);
 
     ctx.translate(x, y);
     ctx.rotate((rotation * Math.PI) / 180);
     ctx.scale(scale, scale);
+    ctx.globalAlpha = opacity;
     
-    const fill = evalProp('fill', '#ffffff');
+    const fill = evalProp('fill', 'transparent');
     ctx.fillStyle = fill;
 
     if (node.type === 'rect') {
@@ -337,6 +341,24 @@ export function renderCanvas(ctx: CanvasRenderingContext2D, project: ProjectStat
       ctx.beginPath();
       ctx.arc(0, 0, r, 0, Math.PI * 2);
       ctx.fill();
+    } else if (node.type === 'vector') {
+      const d = evalProp('d', '');
+      const stroke = evalProp('stroke', 'transparent');
+      const strokeWidth = evalProp('strokeWidth', 0);
+      
+      if (d) {
+        try {
+            const p = new Path2D(d);
+            if (fill !== 'transparent') ctx.fill(p);
+            if (stroke !== 'transparent' && strokeWidth > 0) {
+                ctx.strokeStyle = stroke;
+                ctx.lineWidth = strokeWidth;
+                ctx.stroke(p);
+            }
+        } catch(e) {
+            // Ignore invalid path data during render to prevent crash
+        }
+      }
     }
 
     ctx.restore();
@@ -373,7 +395,8 @@ export function renderSVG(project: ProjectState, audioData?: any) {
     const y = evalProp('y');
     const rotation = evalProp('rotation');
     const scale = evalProp('scale', 1);
-    const fill = evalProp('fill', '#ffffff');
+    const opacity = evalProp('opacity', 1);
+    const fill = evalProp('fill', 'transparent');
 
     const transform = `translate(${x}, ${y}) rotate(${rotation}) scale(${scale})`;
 
@@ -387,6 +410,7 @@ export function renderSVG(project: ProjectState, audioData?: any) {
         width: w, 
         height: h, 
         fill: fill,
+        opacity: opacity,
         transform: transform
       });
     } else if (node.type === 'circle') {
@@ -397,8 +421,23 @@ export function renderSVG(project: ProjectState, audioData?: any) {
         cy: 0, 
         r: r, 
         fill: fill,
+        opacity: opacity,
         transform: transform
       });
+    } else if (node.type === 'vector') {
+        const d = evalProp('d', '');
+        const stroke = evalProp('stroke', 'transparent');
+        const strokeWidth = evalProp('strokeWidth', 0);
+
+        return React.createElement('path', {
+            key: nodeId,
+            d: d,
+            fill: fill,
+            stroke: stroke,
+            strokeWidth: strokeWidth,
+            opacity: opacity,
+            transform: transform
+        });
     }
     return null;
   });
