@@ -56,6 +56,14 @@ export interface ProjectState {
   rootNodeIds: string[];
 }
 
+export interface Command {
+  id: string;
+  name: string;
+  timestamp: number;
+  undo: (state: ProjectState) => ProjectState;
+  redo: (state: ProjectState) => ProjectState;
+}
+
 export type LogLevel = 'info' | 'warn' | 'error';
 
 export interface LogEntry {

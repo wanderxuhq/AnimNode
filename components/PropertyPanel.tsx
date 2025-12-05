@@ -1,14 +1,17 @@
 
+
 import React, { memo, useState, useEffect } from 'react';
-import { Node, Property } from '../types';
-import { Terminal, Code2, MonitorPlay, Move, Layers, Pencil } from 'lucide-react';
+import { Node, Property, Command } from '../types';
+import { Terminal, Code2, MonitorPlay, Move, Layers, Pencil, Trash2 } from 'lucide-react';
 import { PropertyInput } from './PropertyInput';
 
 interface PropertyPanelProps {
   nodes: Record<string, Node>;
   selection: string | null;
   onUpdateProperty: (nodeId: string, propKey: string, updates: Partial<Property>) => void;
+  onCommit: (cmd: Command) => void;
   onRenameNode: (oldId: string, newId: string) => void;
+  onDeleteNode: (id: string) => void;
   viewMode: 'ui' | 'json';
   onViewModeChange: (mode: 'ui' | 'json') => void;
   focusTarget?: { nodeId: string; propKey: string; timestamp: number } | null;
@@ -16,7 +19,7 @@ interface PropertyPanelProps {
 
 const TRANSFORM_KEYS = ['x', 'y', 'rotation', 'scale'];
 
-export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onRenameNode, viewMode, onViewModeChange, focusTarget }: PropertyPanelProps) => {
+export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommit, onRenameNode, onDeleteNode, viewMode, onViewModeChange, focusTarget }: PropertyPanelProps) => {
   const selectedNode = selection ? nodes[selection] : null;
   const [localId, setLocalId] = useState('');
 
@@ -57,7 +60,7 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onRenam
   return (
     <div className="w-full bg-zinc-900 flex flex-col h-full overflow-hidden">
       <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 backdrop-blur-sm flex justify-between items-center shrink-0">
-        <div className="flex-1 mr-4">
+        <div className="flex-1 mr-4 overflow-hidden">
              {/* ID Editor */}
             <div className="flex items-center gap-2 mb-1">
                 <Terminal size={14} className="text-zinc-400 shrink-0" />
@@ -75,6 +78,13 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onRenam
                 <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded uppercase tracking-wider font-medium">
                     {selectedNode.type}
                 </span>
+                <button 
+                    onClick={() => onDeleteNode(selectedNode.id)}
+                    className="p-1 rounded hover:bg-red-900/30 text-zinc-600 hover:text-red-400 transition-colors"
+                    title="Delete Node (Del)"
+                >
+                    <Trash2 size={12} />
+                </button>
             </div>
         </div>
         
@@ -114,7 +124,8 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onRenam
                             prop={prop} 
                             nodeId={selectedNode.id} 
                             nodes={nodes}
-                            onUpdate={onUpdateProperty} 
+                            onUpdate={onUpdateProperty}
+                            onCommit={onCommit}
                             autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
                         />
                         ))}
@@ -135,7 +146,8 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onRenam
                             prop={prop} 
                             nodeId={selectedNode.id} 
                             nodes={nodes}
-                            onUpdate={onUpdateProperty} 
+                            onUpdate={onUpdateProperty}
+                            onCommit={onCommit}
                             autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
                         />
                         ))}
