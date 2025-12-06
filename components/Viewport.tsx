@@ -1,5 +1,4 @@
 
-
 import React, { useRef, useEffect, useState } from 'react';
 import { ProjectState, Node, Command, Property } from '../types';
 import { renderSVG, evaluateProperty } from '../services/engine';
@@ -7,7 +6,7 @@ import { audioController } from '../services/audio';
 import { webgpuRenderer } from '../services/webgpu';
 import { Zap, Cpu, Layers, Activity } from 'lucide-react';
 import { PathPoint, pointsToSvgPath, svgPathToPoints } from '../services/path';
-import { createNode } from '../services/factory';
+import { Commands } from '../services/commands';
 
 interface ViewportProps {
   projectRef: React.MutableRefObject<ProjectState>;
@@ -394,27 +393,13 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               const endD = node.properties.d.value as string;
               
               if (startD !== endD) {
-                   onCommit({
-                      id: crypto.randomUUID(),
-                      name: "Edit Path",
-                      timestamp: Date.now(),
-                      undo: (s) => {
-                          const n = s.nodes[editingPathId];
-                          if (!n) return s;
-                          return {
-                              ...s,
-                              nodes: { ...s.nodes, [editingPathId]: { ...n, properties: { ...n.properties, d: { ...n.properties.d, value: startD } } } }
-                          };
-                      },
-                      redo: (s) => {
-                          const n = s.nodes[editingPathId];
-                          if (!n) return s;
-                          return {
-                              ...s,
-                              nodes: { ...s.nodes, [editingPathId]: { ...n, properties: { ...n.properties, d: { ...n.properties.d, value: endD } } } }
-                          };
-                      }
-                   });
+                   onCommit(Commands.updateProperty(
+                       editingPathId,
+                       'd',
+                       { value: startD },
+                       { value: endD },
+                       "Edit Path"
+                   ));
               }
           }
       }
@@ -550,53 +535,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
           // Commit if moved
           if (Math.abs(currentX - dragStartSnapshot.x) > 0.1 || Math.abs(currentY - dragStartSnapshot.y) > 0.1) {
-             const startX = dragStartSnapshot.x;
-             const startY = dragStartSnapshot.y;
-             const endX = currentX;
-             const endY = currentY;
-             const nodeId = selection;
-
-             onCommit({
-                 id: crypto.randomUUID(),
-                 name: "Move Node",
-                 timestamp: Date.now(),
-                 undo: (s) => {
-                     const n = s.nodes[nodeId];
-                     if(!n) return s;
-                     return {
-                         ...s,
-                         nodes: {
-                             ...s.nodes,
-                             [nodeId]: {
-                                 ...n,
-                                 properties: {
-                                     ...n.properties,
-                                     x: { ...n.properties.x, value: startX },
-                                     y: { ...n.properties.y, value: startY },
-                                 }
-                             }
-                         }
-                     };
-                 },
-                 redo: (s) => {
-                     const n = s.nodes[nodeId];
-                     if(!n) return s;
-                     return {
-                         ...s,
-                         nodes: {
-                             ...s.nodes,
-                             [nodeId]: {
-                                 ...n,
-                                 properties: {
-                                     ...n.properties,
-                                     x: { ...n.properties.x, value: endX },
-                                     y: { ...n.properties.y, value: endY },
-                                 }
-                             }
-                         }
-                     };
-                 }
-             });
+             const startPos = { x: dragStartSnapshot.x, y: dragStartSnapshot.y };
+             const endPos = { x: currentX, y: currentY };
+             
+             onCommit(Commands.moveNode(selection, startPos, endPos));
           }
       }
 

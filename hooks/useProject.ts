@@ -1,9 +1,9 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { ProjectState, Property, Node, ToolType, Command } from '../types';
+import { ProjectState, Property, ToolType, Command } from '../types';
 import { INITIAL_PROJECT } from '../constants';
-import { createNode } from '../services/factory';
 import { audioController } from '../services/audio';
+import { Commands } from '../services/commands';
 
 export function useProject() {
   const [project, setProject] = useState<ProjectState>(INITIAL_PROJECT);
@@ -117,9 +117,6 @@ export function useProject() {
     const prop = node.properties[propId];
     if (!prop) return;
 
-    // Removed optimization check to ensure controlled components receive all updates
-    // The previous check blocked redundant updates which are sometimes needed for input masking/resetting
-
     const nextNodes = {
       ...current.nodes,
       [nodeId]: {
@@ -138,190 +135,62 @@ export function useProject() {
 
   // Atomic Action: Add Node
   const addNode = useCallback((type: 'rect' | 'circle' | 'vector') => {
-    const prev = projectRef.current;
+    const { command, nodeId } = Commands.addNode(type, projectRef.current);
     
-    let index = 0;
-    let newId = `${type}_${index}`;
-    while (prev.nodes[newId]) {
-        index++;
-        newId = `${type}_${index}`;
-    }
+    commit(command);
 
-    const newNode = createNode(type, newId);
-    
-    const applyAdd = (p: ProjectState) => ({
-        ...p,
-        nodes: { ...p.nodes, [newNode.id]: newNode },
-        rootNodeIds: [...p.rootNodeIds, newNode.id],
-        selection: newNode.id
-    });
-    
-    const applyRemove = (p: ProjectState) => {
-        const { [newNode.id]: _, ...remainingNodes } = p.nodes;
-        return {
-            ...p,
-            nodes: remainingNodes,
-            rootNodeIds: p.rootNodeIds.filter(id => id !== newNode.id),
-            selection: p.selection === newNode.id ? null : p.selection
-        };
-    };
-
-    commit({
-        id: crypto.randomUUID(),
-        name: `New ${newNode.name}`,
-        timestamp: Date.now(),
-        undo: applyRemove,
-        redo: applyAdd
+    setProject(p => {
+        const next = command.redo(p);
+        projectRef.current = next;
+        return next;
     });
 
-    const next = applyAdd(prev);
-    projectRef.current = next;
-    setProject(next);
-
-    return newNode.id;
+    return nodeId;
   }, [commit]);
 
   // Atomic Action: Remove Node
   const removeNode = useCallback((nodeId: string) => {
-    const prev = projectRef.current;
-    const node = prev.nodes[nodeId];
-    if (!node) return;
+    // Only attempt remove if node exists
+    if (!projectRef.current.nodes[nodeId]) return;
 
-    const originalIndex = prev.rootNodeIds.indexOf(nodeId);
+    const command = Commands.removeNode(nodeId, projectRef.current);
+    
+    commit(command);
 
-    const performRemove = (s: ProjectState) => {
-       const { [nodeId]: _, ...remainingNodes } = s.nodes;
-       const newRoots = s.rootNodeIds.filter(id => id !== nodeId);
-       return {
-           ...s,
-           nodes: remainingNodes,
-           rootNodeIds: newRoots,
-           selection: s.selection === nodeId ? null : s.selection
-       };
-    };
-
-    const performRestore = (s: ProjectState) => {
-        const newRoots = [...s.rootNodeIds];
-        // Insert back at original index
-        if (originalIndex >= 0 && originalIndex <= newRoots.length) {
-            newRoots.splice(originalIndex, 0, nodeId);
-        } else {
-            newRoots.push(nodeId);
-        }
-
-        return {
-            ...s,
-            nodes: { ...s.nodes, [nodeId]: node },
-            rootNodeIds: newRoots,
-            selection: nodeId 
-        };
-    };
-
-    commit({
-        id: crypto.randomUUID(),
-        name: `Delete ${node.name}`,
-        timestamp: Date.now(),
-        undo: performRestore,
-        redo: performRemove
+    setProject(p => {
+        const next = command.redo(p);
+        projectRef.current = next;
+        return next;
     });
-
-    const next = performRemove(prev);
-    projectRef.current = next;
-    setProject(next);
   }, [commit]);
 
   // Atomic Action: Rename Node
   const renameNode = useCallback((oldId: string, newId: string) => {
-    if (oldId === newId) return;
-    newId = newId.trim();
-    if (!newId) return;
-    if (projectRef.current.nodes[newId]) return;
+    const command = Commands.renameNode(oldId, newId, projectRef.current);
+    if (!command) return; // Fail validation
 
-    const performRename = (state: ProjectState, fromId: string, toId: string) => {
-        const node = state.nodes[fromId];
-        if (!node) return state;
+    commit(command);
 
-        const newNode = { ...node, id: toId };
-        
-        // 1. Rebuild nodes
-        const newNodes: Record<string, Node> = {};
-        Object.keys(state.nodes).forEach(key => {
-            if (key === fromId) newNodes[toId] = newNode;
-            else newNodes[key] = state.nodes[key];
-        });
-
-        // 2. Update references in other nodes (links/code)
-        Object.values(newNodes).forEach((n: Node) => {
-            let propsUpdated = false;
-            const newProps = { ...n.properties };
-            Object.keys(n.properties).forEach(pKey => {
-                const prop = n.properties[pKey];
-                // Link
-                if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.startsWith(fromId + ':')) {
-                    const [, suffix] = prop.value.split(':');
-                    newProps[pKey] = { ...prop, value: `${toId}:${suffix}` };
-                    propsUpdated = true;
-                }
-                // Code
-                if (prop.mode === 'code') {
-                    const regex = new RegExp(`ctx\\.get\\(['"]${fromId}['"]`, 'g');
-                    if (regex.test(prop.expression)) {
-                        newProps[pKey] = { ...prop, expression: prop.expression.replace(regex, `ctx.get('${toId}'`) };
-                        propsUpdated = true;
-                    }
-                }
-            });
-            if (propsUpdated) newNodes[n.id] = { ...n, properties: newProps };
-        });
-
-        const newRoots = state.rootNodeIds.map(id => id === fromId ? toId : id);
-        const newSelection = state.selection === fromId ? toId : state.selection;
-
-        return {
-            ...state,
-            nodes: newNodes,
-            rootNodeIds: newRoots,
-            selection: newSelection
-        };
-    };
-
-    commit({
-        id: crypto.randomUUID(),
-        name: `Rename ${oldId} -> ${newId}`,
-        timestamp: Date.now(),
-        undo: (s) => performRename(s, newId, oldId),
-        redo: (s) => performRename(s, oldId, newId)
+    setProject(p => {
+        const next = command.redo(p);
+        projectRef.current = next;
+        return next;
     });
-
-    const next = performRename(projectRef.current, oldId, newId);
-    projectRef.current = next;
-    setProject(next);
   }, [commit]);
 
   // Atomic Action: Move Node (Reorder)
   const moveNode = useCallback((fromIndex: number, toIndex: number) => {
-    const prev = projectRef.current;
     if (fromIndex === toIndex) return;
     
-    // Logic: Remove 'from', then insert at 'to'
-    const reorder = (s: ProjectState, from: number, to: number) => {
-        const newRoots = [...s.rootNodeIds];
-        const [moved] = newRoots.splice(from, 1);
-        newRoots.splice(to, 0, moved);
-        return { ...s, rootNodeIds: newRoots };
-    };
+    const command = Commands.reorderNode(fromIndex, toIndex);
+    
+    commit(command);
 
-    commit({
-        id: crypto.randomUUID(),
-        name: `Reorder Node`,
-        timestamp: Date.now(),
-        undo: (s) => reorder(s, toIndex, fromIndex), // Reverse op is valid if we track final position
-        redo: (s) => reorder(s, fromIndex, toIndex)
+    setProject(p => {
+        const next = command.redo(p);
+        projectRef.current = next;
+        return next;
     });
-
-    const next = reorder(prev, fromIndex, toIndex);
-    projectRef.current = next;
-    setProject(next);
   }, [commit]);
 
   const selectNode = useCallback((id: string | null) => {

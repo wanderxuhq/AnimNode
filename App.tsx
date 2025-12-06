@@ -8,8 +8,9 @@ import { Toolbar } from './components/Toolbar';
 import { useProject } from './hooks/useProject';
 import { audioController } from './services/audio';
 import { exportToPNG, exportToSVG } from './services/export';
-import { Square, Circle, Download, Layout, Layers, Volume2, Network, Cpu, Image, FileImage, FileJson, GripVertical, History as HistoryIcon } from 'lucide-react';
+import { Square, Circle, Download, Layout, Layers, Volume2, Network, Cpu, Image, FileImage, FileJson, GripVertical, History as HistoryIcon, Bug } from 'lucide-react';
 import { HistoryPanel } from './components/HistoryPanel';
+import { DebugPanel } from './components/DebugPanel';
 
 export default function App() {
   const { 
@@ -35,6 +36,7 @@ export default function App() {
   const [propViewMode, setPropViewMode] = useState<'ui' | 'json'>('ui');
   const [rightPanelMode, setRightPanelMode] = useState<'props' | 'history'>('props');
   const [focusTarget, setFocusTarget] = useState<{nodeId: string, propKey: string, timestamp: number} | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
   
   // Drag & Drop State
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -46,16 +48,26 @@ export default function App() {
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
           const target = e.target as HTMLElement;
-          const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+          const isInput = (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
           
+          // Check if this input explicitly allows global undo (e.g. property fields)
+          const isUndoableInput = target.getAttribute('data-undoable') === 'true';
+          const isColorInput = (target as HTMLInputElement).type === 'color';
+          
+          // Allow if it's NOT an input, OR if it's explicitly marked undoable, OR if it's a color input
+          const shouldAllowUndo = !isInput || isUndoableInput || isColorInput;
+
           // Undo / Redo (Global)
-          // We allow Undo even in inputs if it's a custom shortcut, but usually browsers handle text undo.
-          // However, for App State undo (Ctrl+Z), we generally want it to trigger when not editing text, 
-          // OR if we want to override browser undo. Let's stick to non-input for safety, 
-          // but allow it if the input is just a focus trap (not standard text).
           if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-              if (!isInput) {
-                  e.preventDefault();
+              if (shouldAllowUndo) {
+                  e.preventDefault(); // Prevent browser native undo if we handle it
+                  
+                  // NOTE: We do NOT force blur here anymore.
+                  // PropertyInput handles its own "Dirty" vs "Clean" state.
+                  // If "Dirty", PropertyInput cancels edit and stops propagation.
+                  // If "Clean", PropertyInput bubbles, and we arrive here.
+                  // Since we are Clean, we can safely Undo history without forcing a commit.
+                  
                   if (e.shiftKey) {
                       redo();
                   } else {
@@ -65,8 +77,9 @@ export default function App() {
               return;
           }
           if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
-              if (!isInput) {
+              if (shouldAllowUndo) {
                   e.preventDefault();
+                  if (isInput) target.blur();
                   redo();
               }
               return;
@@ -219,6 +232,8 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-full bg-black text-zinc-300 font-sans overflow-hidden">
       <input type="file" ref={fileInputRef} className="hidden" accept="audio/*" onChange={handleAudioUpload} />
+      
+      {showDebug && <DebugPanel project={project} history={history} onClose={() => setShowDebug(false)} />}
 
       {/* Header */}
       <div className="h-12 bg-zinc-900 border-b border-zinc-700 flex items-center px-4 justify-between shrink-0 z-50 relative shadow-md">
@@ -246,8 +261,17 @@ export default function App() {
              </div>
              
              <div className="h-4 w-px bg-zinc-700" />
-
+             
+             {/* Tools / Export */}
              <div className="flex bg-zinc-800 rounded p-0.5 items-center">
+                 <button 
+                    onClick={() => setShowDebug(!showDebug)}
+                    className={`text-zinc-400 hover:text-white hover:bg-zinc-700 px-2 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors ${showDebug ? 'text-indigo-400 bg-indigo-900/30' : ''}`}
+                    title="Toggle Debug Panel"
+                 >
+                    <Bug size={14} />
+                 </button>
+                 <div className="w-px h-3 bg-zinc-700 mx-1"></div>
                  <button 
                     onClick={handleExportJSON}
                     className="text-zinc-400 hover:text-white hover:bg-zinc-700 px-2 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors"
