@@ -25,7 +25,10 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   const isEditingRef = useRef(false);
   
   // Store the value AT THE START of the interaction for Undo history
-  const snapshotRef = useRef<any>(null);
+  // For 'code' mode, we store the full partial { mode: 'code', expression: ... }
+  // For 'static' mode, we store the full partial { mode: 'static', value: ... }
+  // This ensures Commands.set can restore the exact previous state/mode.
+  const snapshotRef = useRef<Partial<Property> | null>(null);
 
   // Refs for auto-focus
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -64,51 +67,62 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   const captureSnapshot = () => {
       if (!isEditingRef.current) {
           isEditingRef.current = true;
-          // IMPORTANT: Capture the value from the prop (source of truth before edit)
-          // If snapshotRef is already set (rare race condition), don't overwrite it
+          // IMPORTANT: Capture the FULL state source of truth before edit
           if (snapshotRef.current === null) {
-              snapshotRef.current = prop.mode === 'code' ? prop.expression : prop.value;
+              snapshotRef.current = {
+                  mode: prop.mode,
+                  value: prop.value,
+                  expression: prop.expression
+              };
           }
       }
   };
 
-  // Robust Commit Function (Safe for Cleanup)
+  // Robust Commit Function
   const performCommit = () => {
-      // Access latest state via ref to avoid stale closures in useEffect cleanup
       const state = latestState.current;
       
       if (!isEditingRef.current) return;
 
-      const initialValue = snapshotRef.current;
-      // If snapshot never happened, we can't commit.
-      // However, if we are editing, we MUST have a snapshot. 
-      // Fallback: If null, assume initialValue was the prop value at start
-      const safeInitial = initialValue ?? (state.prop.mode === 'code' ? state.prop.expression : state.prop.value);
+      const oldState = snapshotRef.current ?? { mode: state.prop.mode, value: state.prop.value, expression: state.prop.expression };
+      
+      let newState: Partial<Property> = {};
+      let hasChanged = false;
 
-      let finalValue: any = state.prop.mode === 'code' ? state.localExpression : state.localValue;
-
-      // Type Conversion
       if (state.prop.mode === 'static') {
+          let val: any = state.localValue;
           if (state.prop.type === 'number') {
-              const parsed = parseFloat(finalValue);
-              finalValue = isNaN(parsed) ? safeInitial : parsed;
+              const parsed = parseFloat(val);
+              val = isNaN(parsed) ? (oldState.value ?? 0) : parsed;
           }
+          newState = { mode: 'static', value: val };
+          hasChanged = val != oldState.value || oldState.mode !== 'static';
+
+      } else if (state.prop.mode === 'code') {
+          newState = { mode: 'code', expression: state.localExpression };
+          hasChanged = state.localExpression !== oldState.expression || oldState.mode !== 'code';
+
       } else if (state.prop.mode === 'link') {
-          finalValue = state.prop.value;
+          newState = { mode: 'link', value: state.prop.value };
+          hasChanged = state.prop.value !== oldState.value || oldState.mode !== 'link';
       }
 
-      // Check for change
-      if (safeInitial != finalValue) {
-          consoleService.log('info', [`Commit ${state.propKey}: ${safeInitial} -> ${finalValue}`], { nodeId: state.nodeId, propKey: state.propKey });
+      if (hasChanged) {
+          consoleService.log('info', [`Commit ${state.propKey}`], { nodeId: state.nodeId, propKey: state.propKey });
           
-          const key = state.prop.mode === 'code' ? 'expression' : 'value';
-          
-          // Use Commands API
-          const command = Commands.updateProperty(
+          // Use Unified Commands.set
+          // We pass explicit partials to avoid ambiguity
+          const command = Commands.set(
+              // We can't access 'project' directly here easily without prop drilling or context.
+              // But Commands.set needs project mainly to lookup node/prop existence and fallback oldState.
+              // Since we provide prevInput (oldState), we can pass a dummy or partial project if needed, 
+              // BUT 'Commands.set' logic expects 'project.nodes'.
+              // We have 'nodes' in props. We can construct a minimal project object.
+              { nodes: state.nodes } as any, 
               state.nodeId,
               state.propKey,
-              { [key]: safeInitial },
-              { [key]: finalValue },
+              newState, // Input
+              oldState, // Prev Input
               `Set ${state.prop.name}`
           );
           
@@ -149,13 +163,12 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   };
 
   const handleBlur = () => {
-      // Validate Number
       if (prop.type === 'number') {
           const num = parseFloat(localValue);
           if (!isNaN(num)) {
               setLocalValue(String(num));
           } else {
-              const revertVal = snapshotRef.current ?? prop.value;
+              const revertVal = snapshotRef.current?.value ?? prop.value;
               setLocalValue(String(revertVal));
               onUpdate(nodeId, propKey, { value: revertVal });
           }
@@ -186,20 +199,18 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
           return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-           const currentVal = prop.mode === 'code' ? localExpression : localValue;
-           const startVal = snapshotRef.current;
-
-           if (startVal != null && String(currentVal) !== String(startVal)) {
+           const start = snapshotRef.current;
+           if (start) {
                e.preventDefault();
                e.stopPropagation(); 
                // Cancel Edit
                if (prop.mode === 'code') {
-                   setLocalExpression(String(startVal));
-                   onUpdate(nodeId, propKey, { expression: String(startVal) });
+                   setLocalExpression(String(start.expression));
+                   onUpdate(nodeId, propKey, { expression: start.expression });
                } else {
-                   setLocalValue(String(startVal));
-                   let val: any = startVal;
-                   if (prop.type === 'number') val = parseFloat(String(startVal));
+                   setLocalValue(String(start.value));
+                   let val: any = start.value;
+                   if (prop.type === 'number') val = parseFloat(String(start.value));
                    onUpdate(nodeId, propKey, { value: val });
                }
            }
@@ -209,30 +220,38 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   const handleModeChange = (mode: Property['mode']) => {
     const oldMode = prop.mode;
     if (oldMode === mode) return;
+    
+    const oldState = { mode: oldMode, value: prop.value, expression: prop.expression };
+    const newState = { mode: mode };
+
     onUpdate(nodeId, propKey, { mode });
     
-    onCommit(Commands.updateProperty(
+    // Use Unified Commands.set
+    onCommit(Commands.set(
+        { nodes } as any,
         nodeId, 
         propKey, 
-        { mode: oldMode }, 
-        { mode: mode }, 
+        newState, 
+        oldState, 
         `Change ${prop.name} Mode`
     ));
   };
 
   const handleLinkChange = (targetNodeId: string, targetPropId: string) => {
-      const oldVal = prop.value;
+      const oldState = { mode: prop.mode, value: prop.value };
       const newVal = `${targetNodeId}:${targetPropId}`;
+      
       if (targetNodeId && targetPropId) {
           setLinkTargetNode(targetNodeId);
           setLinkTargetProp(targetPropId);
           onUpdate(nodeId, propKey, { value: newVal });
           
-          onCommit(Commands.updateProperty(
+          onCommit(Commands.set(
+            { nodes } as any,
             nodeId,
             propKey,
-            { value: oldVal },
-            { value: newVal },
+            { mode: 'link', value: newVal },
+            oldState,
             `Link ${prop.name}`
           ));
       }

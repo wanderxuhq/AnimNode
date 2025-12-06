@@ -2,6 +2,38 @@
 import { Command, ProjectState, Node, Property } from '../types';
 import { createNode } from './factory';
 
+// Helper to extract function body
+const extractBody = (fn: Function | string): string => {
+    let str = fn.toString().trim();
+    
+    // Robust arrow function detection
+    // Matches: (a,b) => ... or arg => ... or () => ...
+    const arrowRegex = /^(\([^\)]*\)|[a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>/;
+    const match = arrowRegex.exec(str);
+    
+    if (match) {
+        // The body starts after the arrow
+        const bodyStart = match.index + match[0].length;
+        let body = str.substring(bodyStart).trim();
+        
+        // Remove wrapping braces if present { return ... } -> return ...
+        if (body.startsWith('{') && body.endsWith('}')) {
+            return body.substring(1, body.length - 1).trim();
+        }
+        return `return ${body};`;
+    }
+
+    // Handle standard functions function() { ... }
+    const start = str.indexOf('{');
+    const last = str.lastIndexOf('}');
+    if (start > -1 && last > -1) {
+        return str.substring(start + 1, last).trim();
+    }
+    
+    // Fallback for simple return strings or direct expressions
+    return str; 
+};
+
 /**
  * Commands Factory
  * Encapsulates all logic for modifying the project state in an Undo/Redo compatible way.
@@ -103,12 +135,14 @@ export const Commands = {
     if (oldId === newId) return null;
     if (!newId.trim()) return null;
     if (project.nodes[newId]) return null; // ID collision
+    if (!project.nodes[oldId]) return null; // Old node missing
 
     const performRename = (state: ProjectState, fromId: string, toId: string) => {
         const node = state.nodes[fromId];
         if (!node) return state;
 
-        const newNode = { ...node, id: toId };
+        // Create new node with new ID and CLONED properties map to ensure separation
+        const newNode = { ...node, id: toId, properties: { ...node.properties } };
         
         // 1. Rebuild nodes map
         const newNodes: Record<string, Node> = {};
@@ -118,9 +152,11 @@ export const Commands = {
         });
 
         // 2. Update references in other nodes (links/code)
+        // We iterate Object.values(newNodes) which includes our newly created node.
         Object.values(newNodes).forEach((n: Node) => {
             let propsUpdated = false;
             const newProps = { ...n.properties };
+            
             Object.keys(n.properties).forEach(pKey => {
                 const prop = n.properties[pKey];
                 
@@ -141,7 +177,10 @@ export const Commands = {
                     }
                 }
             });
-            if (propsUpdated) newNodes[n.id] = { ...n, properties: newProps };
+            
+            if (propsUpdated) {
+                newNodes[n.id] = { ...n, properties: newProps };
+            }
         });
 
         const newRoots = state.rootNodeIds.map(id => id === fromId ? toId : id);
@@ -161,6 +200,34 @@ export const Commands = {
         timestamp: Date.now(),
         undo: (s) => performRename(s, newId, oldId), // Inverse
         redo: (s) => performRename(s, oldId, newId)
+    };
+  },
+
+  /**
+   * Update Metadata (e.g. Name)
+   */
+  updateNodeMeta: (nodeId: string, updates: { name?: string }, description?: string): Command => {
+    const apply = (s: ProjectState, newMeta: { name?: string }) => {
+        const n = s.nodes[nodeId];
+        if (!n) return s;
+        return {
+            ...s,
+            nodes: {
+                ...s.nodes,
+                [nodeId]: { ...n, ...newMeta }
+            }
+        };
+    };
+
+    return {
+        id: crypto.randomUUID(),
+        name: description || `Update Node Meta`,
+        timestamp: Date.now(),
+        undo: (s) => {
+             // Limited undo support for meta updates without passing prev state explicitly
+             return s; 
+        },
+        redo: (s) => apply(s, updates)
     };
   },
 
@@ -185,28 +252,103 @@ export const Commands = {
   },
 
   /**
-   * Update a single property
+   * Clear all nodes from the project
    */
-  updateProperty: (
+  clearProject: (project: ProjectState): Command => {
+    const oldNodes = { ...project.nodes };
+    const oldRoots = [...project.rootNodeIds];
+    const oldSelection = project.selection;
+
+    return {
+        id: crypto.randomUUID(),
+        name: 'Clear Project',
+        timestamp: Date.now(),
+        undo: (s) => ({
+            ...s,
+            nodes: oldNodes,
+            rootNodeIds: oldRoots,
+            selection: oldSelection
+        }),
+        redo: (s) => ({
+            ...s,
+            nodes: {},
+            rootNodeIds: [],
+            selection: null
+        })
+    };
+  },
+
+  /**
+   * Unified Property Setter.
+   * Handles static values, expressions (functions), and partial updates.
+   * Automatically switches modes based on input type unless explicit partial is provided.
+   */
+  set: (
+      project: ProjectState,
       nodeId: string, 
       propKey: string, 
-      oldState: Partial<Property>, 
-      newState: Partial<Property>, 
+      input: any, 
+      prevInput?: any, 
       description?: string
   ): Command => {
+      // Validate existence in the CURRENT project state passed in
+      const node = project.nodes[nodeId];
+      if (!node) throw new Error(`Node ${nodeId} not found in current state`);
+      const prop = node.properties[propKey];
+      if (!prop) throw new Error(`Property ${propKey} not found on node ${nodeId}`);
+
+      // --- Helper to resolve a raw input to a Property Partial ---
+      const resolveState = (val: any, targetProp: Property): Partial<Property> => {
+          if (typeof val === 'function') {
+              return { mode: 'code', expression: extractBody(val) };
+          }
+          if (val && typeof val === 'object' && 'mode' in val) {
+              return val;
+          }
+          
+          // Handle Static Values
+          // Coerce number strings to numbers if property type requires it
+          let safeVal = val;
+          if (targetProp.type === 'number' && typeof val === 'string') {
+              const parsed = parseFloat(val);
+              if (!isNaN(parsed)) safeVal = parsed;
+          }
+
+          // Ensure expression is synced for consistency
+          const expr = typeof safeVal === 'string' 
+            ? `return "${safeVal}";` 
+            : `return ${JSON.stringify(safeVal)};`;
+
+          return { mode: 'static', value: safeVal, expression: expr };
+      };
+
+      const newState = resolveState(input, prop);
       
-      const applyUpdate = (s: ProjectState, updates: Partial<Property>) => {
-          const node = s.nodes[nodeId];
-          if (!node) return s;
+      let oldState: Partial<Property>;
+      if (prevInput !== undefined) {
+          oldState = resolveState(prevInput, prop);
+      } else {
+          oldState = {
+            mode: prop.mode,
+            value: prop.value,
+            expression: prop.expression
+          };
+      }
+
+      const cmdName = description || `Set ${prop.name}`;
+
+      const apply = (s: ProjectState, updates: Partial<Property>) => {
+          const n = s.nodes[nodeId];
+          if (!n) return s;
           return {
               ...s,
               nodes: {
                   ...s.nodes,
                   [nodeId]: {
-                      ...node,
+                      ...n,
                       properties: {
-                          ...node.properties,
-                          [propKey]: { ...node.properties[propKey], ...updates }
+                          ...n.properties,
+                          [propKey]: { ...n.properties[propKey], ...updates }
                       }
                   }
               }
@@ -215,23 +357,21 @@ export const Commands = {
 
       return {
           id: crypto.randomUUID(),
-          name: description || `Update ${propKey}`,
+          name: cmdName,
           timestamp: Date.now(),
-          undo: (s) => applyUpdate(s, oldState),
-          redo: (s) => applyUpdate(s, newState)
+          undo: (s) => apply(s, oldState),
+          redo: (s) => apply(s, newState)
       };
   },
 
   /**
    * Move a node (Transform X/Y)
-   * This is a specialized helper for creating a bulk update command for position
    */
   moveNode: (
       nodeId: string,
       oldPos: { x: number, y: number },
       newPos: { x: number, y: number }
   ): Command => {
-      
       const applyPos = (s: ProjectState, x: number, y: number) => {
           const n = s.nodes[nodeId];
           if(!n) return s;
@@ -243,8 +383,8 @@ export const Commands = {
                       ...n,
                       properties: {
                           ...n.properties,
-                          x: { ...n.properties.x, value: x },
-                          y: { ...n.properties.y, value: y },
+                          x: { ...n.properties.x, value: x, mode: 'static' as const, expression: `return ${x};` },
+                          y: { ...n.properties.y, value: y, mode: 'static' as const, expression: `return ${y};` },
                       }
                   }
               }
@@ -257,6 +397,32 @@ export const Commands = {
           timestamp: Date.now(),
           undo: (s) => applyPos(s, oldPos.x, oldPos.y),
           redo: (s) => applyPos(s, newPos.x, newPos.y)
+      };
+  },
+
+  /**
+   * Batch multiple commands into a single transaction
+   */
+  batch: (commands: Command[], name: string = 'Batch Action'): Command => {
+      return {
+          id: crypto.randomUUID(),
+          name,
+          timestamp: Date.now(),
+          undo: (s) => {
+              let state = s;
+              // Reverse undo order
+              for (let i = commands.length - 1; i >= 0; i--) {
+                  state = commands[i].undo(state);
+              }
+              return state;
+          },
+          redo: (s) => {
+              let state = s;
+              for (const cmd of commands) {
+                  state = cmd.redo(state);
+              }
+              return state;
+          }
       };
   }
 };

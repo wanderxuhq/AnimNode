@@ -393,11 +393,13 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               const endD = node.properties.d.value as string;
               
               if (startD !== endD) {
-                   onCommit(Commands.updateProperty(
+                   // Use unified command
+                   onCommit(Commands.set(
+                       projectRef.current,
                        editingPathId,
                        'd',
-                       { value: startD },
-                       { value: endD },
+                       endD,
+                       startD,
                        "Edit Path"
                    ));
               }

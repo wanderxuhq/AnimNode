@@ -9,9 +9,10 @@ interface TimelineProps {
   onTimeChange: (t: number) => void;
   onTogglePlay: () => void;
   onJumpToSource: (nodeId: string, propKey: string) => void;
+  onRunScript?: (code: string) => void;
 }
 
-export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTogglePlay, onJumpToSource }) => {
+export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTogglePlay, onJumpToSource, onRunScript }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [showConsole, setShowConsole] = useState(false);
   
@@ -54,7 +55,7 @@ export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTog
       {/* Main Content Area */}
       {showConsole ? (
           <div className="flex-1 overflow-hidden relative">
-              <ConsolePanel onJumpToSource={onJumpToSource} />
+              <ConsolePanel onJumpToSource={onJumpToSource} onRunScript={onRunScript} />
           </div>
       ) : (
         <div className="flex-1 flex overflow-hidden">

@@ -1,6 +1,5 @@
 
 
-
 import { Node, ProjectState, Property } from '../types';
 import { consoleService } from './console';
 import React from 'react';
@@ -253,7 +252,9 @@ export function evaluateProperty(
       // "with(sandbox)" forces all variable lookups to go through the proxy "has" trap.
       // Since "has" returns true, it tries to get it from the proxy.
       // The proxy "get" trap then decides whether to allow it (whitelisted) or block it (undefined).
-      const func = new Function('sandbox', `with(sandbox) { ${prop.expression} }`);
+      
+      // FIX: Add newlines to prevent inline comments (//) from commenting out the closing brace '}'
+      const func = new Function('sandbox', `with(sandbox) { \n${prop.expression}\n }`);
       const result = func(sandbox);
 
       // Success! Clear any persistent errors for this property
@@ -264,14 +265,6 @@ export function evaluateProperty(
 
     } catch (e: any) {
       // Capture runtime errors
-      // IMPORTANT: Suppress SyntaxError here because this runs 60fps while the user is typing.
-      // Explicit syntax validation happens on blur in PropertyInput.
-      if (e instanceof SyntaxError) {
-        // We still clear runtime errors if it becomes a syntax error (which is handled by UI)
-        if (debugInfo) consoleService.clearError(debugInfo.nodeId, debugInfo.propKey);
-        return prop.value;
-      }
-
       if (debugInfo && shouldLog) {
           consoleService.log('error', [e instanceof Error ? e.message : String(e)], debugInfo);
       }

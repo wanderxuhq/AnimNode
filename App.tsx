@@ -30,7 +30,8 @@ export default function App() {
     moveNode,
     togglePlay, 
     setTime,
-    setTool
+    setTool,
+    runScript
   } = useProject();
 
   const [propViewMode, setPropViewMode] = useState<'ui' | 'json'>('ui');
@@ -214,12 +215,7 @@ export default function App() {
     // Adjustment: If we remove an item from a lower index, all subsequent indices shift down.
     // If the insertion point is higher than the source, we need to account for that shift 
     // to land in the visually intended spot.
-    // However, our `moveNode` uses splice logic where `to` index is based on the array *after* removal? 
-    // Actually, let's look at `moveNode` implementation in useProject.
-    // It does: splice(from, 1), then splice(to, 0, item).
     
-    // If we want to insert AT `insertionIndex` of the *original* array (conceptually), 
-    // and the source is before it, the target slot shifts down by 1.
     if (sourceIndex < insertionIndex) {
         insertionIndex -= 1;
     }
@@ -428,7 +424,8 @@ export default function App() {
         project={project} 
         onTimeChange={setTime} 
         onTogglePlay={togglePlay}
-        onJumpToSource={handleJumpToSource} 
+        onJumpToSource={handleJumpToSource}
+        onRunScript={runScript}
       />
     </div>
   );
