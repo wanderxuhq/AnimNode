@@ -27,29 +27,47 @@
 | 函数签名 | 返回值 | 描述 |
 | :--- | :--- | :--- |
 | `addNode(type: string)` | `NodeProxy` | 创建新节点。`type` 可选值: `'rect'`, `'circle'`, `'vector'`。默认位置为屏幕中心。 |
-| `createVariable(value: any)` | `NodeProxy` | 创建全局变量节点。**系统会自动使用 `const` 声明的变量名作为节点 ID**。返回的对象可像普通变量一样调用，且可在表达式中通过变量名引用。 |
+| `createVariable(value: any)` | `NodeProxy` | **创建持久化全局变量节点**。系统会自动使用 `const` 声明的变量名作为节点 ID。返回的对象可在 UI 中显示，也可在其他节点的表达式中通过名字引用。 |
 | `removeNode(id: string)` | `void` | 删除指定 ID 的节点。 |
 | `clear()` | `void` | **重要**: 清空当前画布上的所有节点。建议在生成式脚本开头调用。 |
 | `log(...args)` | `void` | 输出信息到控制台。 |
 | `warn(...args)` | `void` | 输出警告。 |
 | `error(...args)` | `void` | 输出错误。 |
 
-### 变量定义 (Variable Creation)
-要创建可在表达式中引用的全局变量，**必须**使用 `createVariable`。系统会自动提取变量名。
+### 变量定义指南 (Variable Creation Guide)
+
+请根据用途选择正确的变量定义方式：
+
+#### A. 全局/持久化变量 (Global/Persistent Variables)
+**场景**: 变量需要在 **UI面板中显示**，或者需要被 **其他节点的表达式 (Expression)** 引用。
+**方法**: 使用 `createVariable`。这会在场景图 (Scene Graph) 中创建一个类型为 `value` 的节点。
 
 ```javascript
-// 创建全局变量 'SUN_X'，初始值为 400
-// 系统自动将节点 ID 设为 'SUN_X'
+// 1. 创建全局变量 'SUN_X'
+// 场景图中会出现一个名为 SUN_X 的节点
 const SUN_X = createVariable(400);
 
-// 创建对象类型的全局变量
-const CONFIG = createVariable({ 
-    speed: 2, 
-    color: '#ff0000' 
-});
+// 2. 在其他节点的表达式中引用
+// 只有通过 createVariable 创建的变量才能在 () => ... 中被引用
+const earth = addNode('circle');
+earth.x = () => SUN_X + 100; // 有效引用
+```
 
-// 普通脚本变量 (不会创建节点，仅在脚本执行期间有效，无法在表达式中引用)
-const tempValue = 100; 
+#### B. 脚本局部变量 (Script-Local Variables)
+**场景**: 变量仅在 **当前脚本逻辑内部** 使用（如循环计数器、临时计算结果），不需要暴露给 UI 或其他节点。
+**方法**: 使用标准的 JavaScript `const` 或 `let`。**不要** 为这些变量使用 `createVariable`，以免污染场景图。
+
+```javascript
+// 这里的 count 和 i 只是脚本运行时的临时变量
+// 执行完脚本后，它们不会作为节点存在于场景中
+const count = 5; 
+const spacing = 60;
+
+for(let i = 0; i < count; i++) {
+    const n = addNode('rect');
+    // 使用局部变量进行计算并静态赋值
+    n.x = 400 + (i - count/2) * spacing; 
+}
 ```
 
 ### 内置对象
@@ -195,7 +213,8 @@ earth.y = () => 300 + Math.sin(t) * ORBIT_R;
 ### 批量生成 (Grid System)
 ```javascript
 clear();
-const count = 5; // 这是一个普通的脚本局部变量，不会创建节点
+// count 和 i 是脚本局部变量，不需要 createVariable
+const count = 5; 
 for(let i=0; i<count; i++) {
     const n = addNode('rect');
     n.x = 400 + (i - count/2) * 60;
