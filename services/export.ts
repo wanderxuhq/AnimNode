@@ -33,6 +33,8 @@ export const generateSVGString = (project: ProjectState): string => {
     const scale = v('scale', 1);
     const opacity = v('opacity', 1);
     const fill = v('fill', 'none');
+    const stroke = v('stroke', 'none');
+    const strokeWidth = v('strokeWidth', 0);
     
     // SVG transform order matters.
     const transform = `translate(${x}, ${y}) rotate(${rotation}) scale(${scale})`;
@@ -40,16 +42,14 @@ export const generateSVGString = (project: ProjectState): string => {
     if (node.type === 'rect') {
       const w = v('width', 100);
       const h = v('height', 100);
-      elements += `<rect x="${-w/2}" y="${-h/2}" width="${w}" height="${h}" fill="${fill}" opacity="${opacity}" transform="${transform}" />`;
+      elements += `<rect x="${-w/2}" y="${-h/2}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
     } 
     else if (node.type === 'circle') {
       const r = v('radius', 50);
-      elements += `<circle cx="0" cy="0" r="${r}" fill="${fill}" opacity="${opacity}" transform="${transform}" />`;
+      elements += `<circle cx="0" cy="0" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
     } 
     else if (node.type === 'vector') {
         const d = v('d', '');
-        const stroke = v('stroke', 'none');
-        const strokeWidth = v('strokeWidth', 0);
         // Note: attribute is stroke-width, not strokeWidth
         elements += `<path d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
     }

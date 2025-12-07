@@ -106,11 +106,15 @@ for(let i = 0; i < count; i++) {
 | :--- | :--- | :--- | :--- |
 | `width` | `number` | 100 | 宽度。 |
 | `height` | `number` | 100 | 高度。 |
+| `stroke` | `color` | `transparent` | 描边颜色。 |
+| `strokeWidth` | `number` | 0 | 描边宽度。 |
 
 **Type: 'circle'**
 | 属性名 | 类型 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- |
 | `radius` | `number` | 50 | 半径。 |
+| `stroke` | `color` | `transparent` | 描边颜色。 |
+| `strokeWidth` | `number` | 0 | 描边宽度。 |
 
 **Type: 'vector'**
 | 属性名 | 类型 | 默认值 | 描述 |

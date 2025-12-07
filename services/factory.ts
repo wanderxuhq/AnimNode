@@ -71,6 +71,8 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
         width: { ...createProp('Width', 'number', 100), mode: 'static' as const, expression: 'return 100;' },
         height: { ...createProp('Height', 'number', 100), mode: 'static' as const, expression: 'return 100;' },
         fill: { ...createProp('Fill Color', 'color', '#3b82f6'), mode: 'static' as const, expression: 'return "#3b82f6";' },
+        stroke: { ...createProp('Stroke Color', 'color', 'transparent'), mode: 'static' as const, expression: 'return "transparent";' },
+        strokeWidth: { ...createProp('Stroke Width', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
       }
     };
   }
@@ -84,6 +86,8 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
         ...baseProps,
         radius: { ...createProp('Radius', 'number', 50), mode: 'static' as const, expression: 'return 50;' },
         fill: { ...createProp('Fill Color', 'color', '#ec4899'), mode: 'static' as const, expression: 'return "#ec4899";' },
+        stroke: { ...createProp('Stroke Color', 'color', 'transparent'), mode: 'static' as const, expression: 'return "transparent";' },
+        strokeWidth: { ...createProp('Stroke Width', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
       }
     };
   }

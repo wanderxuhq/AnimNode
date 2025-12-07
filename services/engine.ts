@@ -442,6 +442,8 @@ export function renderSVG(project: ProjectState, audioData?: any) {
     const scale = evalProp('scale', 1);
     const opacity = evalProp('opacity', 1);
     const fill = evalProp('fill', 'transparent');
+    const stroke = evalProp('stroke', 'transparent');
+    const strokeWidth = evalProp('strokeWidth', 0);
 
     const transform = `translate(${x}, ${y}) rotate(${rotation}) scale(${scale})`;
 
@@ -455,6 +457,8 @@ export function renderSVG(project: ProjectState, audioData?: any) {
         width: w, 
         height: h, 
         fill: fill,
+        stroke: stroke,
+        strokeWidth: strokeWidth,
         opacity: opacity,
         transform: transform
       });
@@ -466,14 +470,16 @@ export function renderSVG(project: ProjectState, audioData?: any) {
         cy: 0, 
         r: r, 
         fill: fill,
+        stroke: stroke,
+        strokeWidth: strokeWidth,
         opacity: opacity,
         transform: transform
       });
     } else if (node.type === 'vector') {
         const d = evalProp('d', '');
-        const stroke = evalProp('stroke', 'transparent');
-        const strokeWidth = evalProp('strokeWidth', 0);
-
+        // Vector nodes handle stroke/strokeWidth internally in their own property logic
+        // but we can ensure they are passed through here as well if they follow standard prop names
+        
         return React.createElement('path', {
             key: nodeId,
             d: d,
