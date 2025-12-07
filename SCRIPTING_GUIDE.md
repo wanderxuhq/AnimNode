@@ -27,7 +27,7 @@
 | 函数签名 | 返回值 | 描述 |
 | :--- | :--- | :--- |
 | `addNode(type: string)` | `NodeProxy` | 创建新节点。`type` 可选值: `'rect'`, `'circle'`, `'vector'`。默认位置为屏幕中心。 |
-| `createVariable(name: string, value: any)` | `NodeProxy` | 创建全局变量节点。返回的对象可像普通变量一样调用，且可在表达式中通过变量名引用。 |
+| `createVariable(value: any)` | `NodeProxy` | 创建全局变量节点。**系统会自动使用 `const` 声明的变量名作为节点 ID**。返回的对象可像普通变量一样调用，且可在表达式中通过变量名引用。 |
 | `removeNode(id: string)` | `void` | 删除指定 ID 的节点。 |
 | `clear()` | `void` | **重要**: 清空当前画布上的所有节点。建议在生成式脚本开头调用。 |
 | `log(...args)` | `void` | 输出信息到控制台。 |
@@ -35,15 +35,15 @@
 | `error(...args)` | `void` | 输出错误。 |
 
 ### 变量定义 (Variable Creation)
-要创建可在表达式中引用的全局变量，**必须**使用 `createVariable` (或 `addVariable`)。
+要创建可在表达式中引用的全局变量，**必须**使用 `createVariable`。系统会自动提取变量名。
 
 ```javascript
 // 创建全局变量 'SUN_X'，初始值为 400
-// 该变量会自动显示在场景列表中，并可在其他节点的表达式中使用
-const sunX = createVariable('SUN_X', 400);
+// 系统自动将节点 ID 设为 'SUN_X'
+const SUN_X = createVariable(400);
 
 // 创建对象类型的全局变量
-const config = createVariable('CONFIG', { 
+const CONFIG = createVariable({ 
     speed: 2, 
     color: '#ff0000' 
 });
@@ -119,10 +119,11 @@ AnimNode 支持两种属性赋值模式。
 node.x = 100; 
 
 // 使用变量赋值 (注意：这是静态快照！)
-const R = createVariable('R', 50);
+// 如果 R 是普通数值/字符串变量，这里会静态读取 R 的当前值并赋值给 node.radius
+const R = createVariable(50);
 node.radius = R; 
 // 结果: node.radius 的值被静态设置为 50。
-// 如果后续 R 变为 100，node.radius 仍然是 50，除非重新执行脚本。
+// 如果后续 R 变为 100，node.radius 仍然是 50。
 ```
 
 ### 模式 B: 表达式赋值 (Expression Assignment)
@@ -135,12 +136,25 @@ node.radius = R;
 node.x = () => 400 + Math.sin(t) * 100;
 
 // 动态引用全局变量
-const orbitR = createVariable('ORBIT_R', 150);
+const ORBIT_R = createVariable(150);
 
 // 注意使用箭头函数 () => ...
 // 这样 engine 会保存 "return ORBIT_R;" 作为表达式
 // 结果: node.x 会每一帧读取 ORBIT_R 的当前值
 node.x = () => 400 + Math.cos(t) * ORBIT_R; 
+```
+
+### 特殊情况：函数变量 (Function Variable)
+如果你创建的变量本身就是一个函数，那么将其直接赋值给属性时，系统会自动将其视为表达式链接。
+
+```javascript
+// 1. 创建一个函数类型的变量
+const GET_Y = createVariable(() => 300 + Math.sin(t) * 100);
+
+// 2. 直接赋值
+// 因为 GET_Y 是函数类型，系统会自动将其设置为 'code' 模式，并链接到 GET_Y
+node.y = GET_Y; 
+// 等同于: node.y = () => GET_Y();
 ```
 
 ### 表达式内部环境
@@ -158,9 +172,9 @@ node.x = () => 400 + Math.cos(t) * ORBIT_R;
 ### 全局变量示例
 ```javascript
 clear();
-// 1. 创建全局变量 (会自动显示在列表中)
-const SUN_X = createVariable('SUN_X', 400); 
-const ORBIT_R = createVariable('ORBIT_R', 150);
+// 1. 创建全局变量 (会自动显示在列表中, ID为 SUN_X)
+const SUN_X = createVariable(400); 
+const ORBIT_R = createVariable(150);
 
 // 2. 创建节点
 const sun = addNode('circle');

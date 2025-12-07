@@ -36,6 +36,26 @@ const extractBody = (fn: Function | string): string => {
 };
 
 /**
+ * Transforms user script to inject metadata.
+ * Main feature: auto-injects variable name into createVariable calls.
+ * const MY_VAR = createVariable(100) -> const MY_VAR = createVariable('MY_VAR', 100)
+ */
+const transformScript = (code: string): string => {
+    // Regex breakdown:
+    // (const|let|var)  -> Capture declaration keyword
+    // \s+
+    // ([a-zA-Z_$][a-zA-Z0-9_$]*) -> Capture variable name
+    // \s*=\s*
+    // createVariable\s*\(  -> Match function call start
+    const regex = /(const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*createVariable\s*\(/g;
+    
+    return code.replace(regex, (match, keyword, name) => {
+        // Inject the name as the first argument string
+        return `${keyword} ${name} = createVariable('${name}', `;
+    });
+};
+
+/**
  * Creates a sandbox context for user scripts.
  */
 export const createScriptContext = (
@@ -318,8 +338,27 @@ export const createScriptContext = (
         return getProxy(nodeId);
     };
 
-    // Shared implementation for creating variables
-    const handleAddVariable = (name: string, value: any) => {
+    /**
+     * Handles creating variables.
+     * Supports two signatures due to script transformation:
+     * 1. (arg1: value) -> Untransformed. Name is auto-generated.
+     * 2. (arg1: name, arg2: value) -> Transformed. Name is explicit.
+     */
+    const handleAddVariable = (arg1: any, arg2?: any) => {
+        let name: string | undefined;
+        let value: any;
+
+        if (arg2 !== undefined) {
+            // Transformed case: createVariable('NAME', value)
+            name = String(arg1);
+            value = arg2;
+        } else {
+            // Untransformed case: createVariable(value)
+            // Or user explicitly called createVariable('name') with no value? Unlikely in this flow.
+            // We treat the single argument as the Value.
+            value = arg1;
+        }
+
         const { command, nodeId } = Commands.addNode('value', projectGetter());
         commit(command);
         
@@ -394,7 +433,7 @@ export const createScriptContext = (
 
 /**
  * Executes a string of code within the project context.
- * Standard JS execution.
+ * Standard JS execution with preprocessing.
  */
 export const executeScript = (
     code: string, 
@@ -402,7 +441,10 @@ export const executeScript = (
     commit: (cmd: Command) => void,
     logger: { log: (l: 'info'|'warn'|'error', m: any[]) => void }
 ) => {
-    // Create the context with proxies and API
+    // 1. Preprocess: Inject variable names from const/let declarations
+    const transformedCode = transformScript(code);
+
+    // 2. Create the context with proxies and API
     const context = createScriptContext(projectGetter, commit, (l, m) => logger.log(l, m));
     
     const paramNames = Object.keys(context);
@@ -410,7 +452,7 @@ export const executeScript = (
     
     try {
         // Execute raw code with Strict Mode
-        const fn = new Function(...paramNames, `"use strict";\n${code}`);
+        const fn = new Function(...paramNames, `"use strict";\n${transformedCode}`);
         fn(...paramValues);
         return true;
     } catch (e: any) {
