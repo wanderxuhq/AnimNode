@@ -1,3 +1,5 @@
+
+
 import { ProjectState, Command } from '../types';
 import { Commands } from './commands';
 
@@ -33,19 +35,36 @@ export const createScriptContext = (
         let currentCacheKey = initialId;
 
         const proxy = new Proxy({}, {
-            get: (target, prop: string) => {
+            get: (target, prop: string | symbol) => {
                 const project = projectGetter();
                 const node = project.nodes[currentRefId];
                 
+                // Handle primitive conversion for math operations (e.g. X + 10)
+                if (prop === Symbol.toPrimitive || prop === 'valueOf') {
+                     return (hint: string) => {
+                         if (node && 'value' in node.properties) {
+                             const val = node.properties.value.value;
+                             return val;
+                         }
+                         return NaN;
+                     };
+                }
+                if (prop === 'toString') {
+                     return () => {
+                         if (node && 'value' in node.properties) {
+                             return String(node.properties.value.value);
+                         }
+                         return `[Node: ${currentRefId}]`;
+                     };
+                }
+                
                 // If node is gone (deleted), return undefined
-                // But log a warning if accessed? No, let standard JS undefined behavior handle it unless strictly needed.
                 if (!node) {
-                     // Optionally log: log('warn', [`Accessing deleted node ${currentRefId}`]);
                      return undefined;
                 }
                 
                 // Allow direct reading of current values
-                if (prop in node.properties) {
+                if (typeof prop === 'string' && prop in node.properties) {
                     return node.properties[prop].value;
                 }
                 
@@ -113,7 +132,6 @@ export const createScriptContext = (
                     // Commands.set handles static values vs functions automatically
                     const cmd = Commands.set(project, currentRefId, prop, value, undefined, `Script: Set ${prop}`);
                     commit(cmd);
-                    // log('info', [`Set ${currentRefId}.${prop}`]); 
                     return true;
                 } catch (e: any) {
                     log('error', [`Error setting ${currentRefId}.${prop}: ${e.message}`]);
@@ -125,15 +143,6 @@ export const createScriptContext = (
         proxyCache.set(initialId, proxy);
         return proxy;
     };
-    
-    // Provide a way to clear cache if needed, though 'clear()' command rebuilds state usually.
-    // Ideally clear() in script should wipe this cache too, but since createScriptContext is called PER execution,
-    // the cache is local to the run.
-    
-    // However, if we run a script that clears the project, the proxies in the cache are now pointing to deleted nodes.
-    // If the script adds new nodes with same IDs, we must ensure we get fresh proxies?
-    // Actually, 'addNode' implementation below handles this by calling getProxy.
-    // If 'circle_0' was deleted, and added again, 'getProxy' will return the OLD proxy if we don't clear it.
     
     const uncacheProxy = (id: string) => {
         proxyCache.delete(id);
@@ -170,6 +179,50 @@ export const createScriptContext = (
         return getProxy(nodeId);
     };
 
+    context.addVariable = (name: string, value: any) => {
+        // 1. Create Variable Node
+        const { command, nodeId } = Commands.addNode('value', projectGetter());
+        commit(command);
+        
+        // 2. Rename it to desired name (if name provided)
+        if (name && name !== nodeId) {
+             const renameCmd = Commands.renameNode(nodeId, name, projectGetter());
+             if (renameCmd) {
+                 commit(renameCmd);
+             } else {
+                 log('warn', [`Could not rename variable to '${name}'. Kept as '${nodeId}'`]);
+             }
+        }
+        
+        const finalId = (name && projectGetter().nodes[name]) ? name : nodeId;
+
+        // 3. Set Initial Value and Type
+        if (value !== undefined) {
+             let typeStr = 'number';
+             if (typeof value === 'boolean') typeStr = 'boolean';
+             else if (typeof value === 'string') {
+                 // Try to detect colors
+                 if (value.startsWith('#') || value.startsWith('rgb')) typeStr = 'color';
+                 else typeStr = 'string';
+             } else {
+                 typeStr = 'number'; // fallback
+             }
+
+             // We pass a partial property including type to ensure UI updates correctly
+             const propUpdate = {
+                 value: value,
+                 type: typeStr as any,
+                 mode: 'static'
+             };
+
+             const setCmd = Commands.set(projectGetter(), finalId, 'value', propUpdate, undefined, 'Set Initial Value');
+             commit(setCmd);
+        }
+        
+        log('info', [`Created variable: ${finalId}`]);
+        return getProxy(finalId);
+    };
+
     context.removeNode = (id: string) => {
         const cmd = Commands.removeNode(id, projectGetter());
         commit(cmd);
@@ -197,6 +250,67 @@ export const executeScript = (
     commit: (cmd: Command) => void,
     logger: { log: (l: 'info'|'warn'|'error', m: any[]) => void }
 ) => {
+    // Transformer: Detect top-level const/let/var assignments to primitives and convert to addVariable
+    // Matches: const NAME = VALUE;
+    // Excludes: const n = addNode(...);
+    
+    // We split lines to avoid complex regex multiline issues
+    const lines = code.split('\n');
+    const transformedLines = lines.map(line => {
+        // Regex to match "const/var/let NAME = VALUE;"
+        // We use a looser regex to capture the whole line after '=' to handle comments manually
+        const declRegex = /^(\s*)(const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(.+)$/;
+        const match = declRegex.exec(line);
+        
+        if (match) {
+            const indent = match[1];
+            // const keyword = match[2]; // unused
+            const name = match[3];
+            const remainder = match[4];
+            
+            // Avoid recursion for existing API calls or function defs
+            const trimmedRem = remainder.trim();
+            if (trimmedRem.startsWith('addVariable') || 
+                trimmedRem.startsWith('addNode') || 
+                trimmedRem.startsWith('function') || 
+                trimmedRem.startsWith('(') ||
+                trimmedRem.startsWith('new ')) {
+                return line;
+            }
+            
+            // Manual parsing for value vs comment to handle:
+            // "10; // comment" or "10 // comment"
+            // We strip trailing comments to ensure the value passed to addVariable is clean.
+            // NOTE: This simple split might break strings containing '//', e.g. "http://..."
+            // Assuming variables are mostly numeric/color for this DSL feature.
+            
+            let valueExpr = remainder;
+            let comment = '';
+            
+            const commentIdx = remainder.indexOf('//');
+            if (commentIdx !== -1) {
+                valueExpr = remainder.substring(0, commentIdx);
+                comment = remainder.substring(commentIdx);
+            }
+            
+            valueExpr = valueExpr.trim();
+            
+            // Handle semicolon
+            let semi = '';
+            if (valueExpr.endsWith(';')) {
+                semi = ';';
+                valueExpr = valueExpr.substring(0, valueExpr.length - 1).trim();
+            }
+            
+            if (!valueExpr) return line;
+
+            return `${indent}const ${name} = addVariable('${name}', ${valueExpr})${semi} ${comment}`;
+        }
+        return line;
+    });
+
+    const finalCode = transformedLines.join('\n');
+
     // Pass the getter down
     // Use an arrow function to preserve the 'this' context of logger.log
     const context = createScriptContext(projectGetter, commit, (l, m) => logger.log(l, m));
@@ -207,7 +321,7 @@ export const executeScript = (
     try {
         // Run code inside a function with the context variables as arguments
         // 'use strict' is implicit in modules but explicit here helps
-        const fn = new Function(...paramNames, `"use strict"; ${code}`);
+        const fn = new Function(...paramNames, `"use strict"; ${finalCode}`);
         fn(...paramValues);
         return true;
     } catch (e: any) {

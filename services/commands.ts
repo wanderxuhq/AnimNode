@@ -42,7 +42,7 @@ export const Commands = {
   /**
    * Add a new node to the project
    */
-  addNode: (type: 'rect' | 'circle' | 'vector', project: ProjectState): { command: Command, nodeId: string } => {
+  addNode: (type: 'rect' | 'circle' | 'vector' | 'value', project: ProjectState): { command: Command, nodeId: string } => {
     // Calculate new ID
     let index = 0;
     let newId = `${type}_${index}`;

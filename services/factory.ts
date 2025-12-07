@@ -21,7 +21,7 @@ export const createProp = (name: string, type: any, value: any): Property => ({
   expression: type === 'string' ? `return "${value}";` : `return ${JSON.stringify(value)};`
 });
 
-export const createNode = (type: 'rect' | 'circle' | 'vector', id?: string): Node => {
+export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: string): Node => {
   const nodeId = id || uuid();
   
   // Default to screen center (400, 300) so new nodes are visible
@@ -32,6 +32,17 @@ export const createNode = (type: 'rect' | 'circle' | 'vector', id?: string): Nod
       scale: { ...createProp('Scale', 'number', 1), mode: 'static' as const, expression: 'return 1;' },
       opacity: { ...createProp('Opacity', 'number', 1), mode: 'static' as const, expression: 'return 1;' },
   };
+
+  if (type === 'value') {
+    return {
+      id: nodeId,
+      type,
+      parentId: null,
+      properties: {
+        value: { ...createProp('Value', 'number', 0), mode: 'static' as const, expression: 'return 0;' }
+      }
+    };
+  }
 
   if (type === 'rect') {
     return {

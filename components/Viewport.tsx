@@ -13,7 +13,7 @@ interface ViewportProps {
   onUpdate: (id: string, propKey: string, updates: any) => void;
   onCommit: (cmd: Command) => void; // New prop for history
   selection: string | null;
-  onAddNode: (type: 'rect' | 'circle' | 'vector') => string;
+  onAddNode: (type: 'rect' | 'circle' | 'vector' | 'value') => string;
 }
 
 // Helper to convert hex to normalized rgb
@@ -48,6 +48,7 @@ const createEvalContext = (project: ProjectState) => {
     const audioData = audioController.getAudioData();
     const ctx: any = { 
         audio: audioData || {},
+        project: project, // Inject project for global variable lookup
         get: (nodeId: string, propKey: string, depth: number = 0) => {
             const node = project.nodes[nodeId];
             if (!node) return 0;
@@ -157,14 +158,21 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
       if (project.meta.renderer === 'webgpu' && gpuReady && canvasWebGpuRef.current) {
           const nodes = project.rootNodeIds;
-          const count = nodes.length;
-          setInstanceCount(count);
+          
+          // Count only renderable nodes for WebGPU allocation
+          let renderableCount = 0;
+          for(const id of nodes) {
+              const node = project.nodes[id];
+              if(node && node.type !== 'value') renderableCount++;
+          }
+          setInstanceCount(renderableCount);
 
-          const floatCount = count * 10;
+          const floatCount = renderableCount * 10;
           const data = new Float32Array(floatCount);
           
           const evalContext: any = { 
             audio: audioData || {},
+            project: project,
             get: (nodeId: string, propKey: string, depth: number = 0) => {
                 const node = project.nodes[nodeId];
                 if (!node) return 0;
@@ -177,6 +185,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           for(const id of nodes) {
               const node = project.nodes[id];
               if(!node) continue;
+              if(node.type === 'value') continue; // Skip variables in WebGPU render
               
               const v = (key: string, def: any) => 
                   evaluateProperty(node.properties[key], project.meta.currentTime, evalContext, 0, {nodeId: id, propKey: key}) ?? def;
@@ -220,14 +229,14 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
               index++;
           }
-          webgpuRenderer.render(data, count, project.meta.width, project.meta.height, canvasWebGpuRef.current);
+          webgpuRenderer.render(data, renderableCount, project.meta.width, project.meta.height, canvasWebGpuRef.current);
       } 
       
       const svgTree = renderSVG(project, audioData);
       setSvgContent(svgTree);
 
       if (project.meta.renderer === 'svg') {
-         setInstanceCount(project.rootNodeIds.length);
+         setInstanceCount(project.rootNodeIds.filter(id => project.nodes[id]?.type !== 'value').length);
       }
       
       setTick(t => t + 1);
@@ -464,6 +473,8 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
       for (const id of nodes) {
           const node = project.nodes[id];
+          if (node.type === 'value') continue; // Cannot select variables in viewport
+
           const nx = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
           const ny = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
           const rot = evaluateProperty(node.properties.rotation, project.meta.currentTime, ctx) as number;
@@ -535,6 +546,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       }
 
       if (!isDragging || !selection) return;
+      
+      // Ensure we aren't dragging a variable node via some bug
+      if (projectRef.current.nodes[selection]?.type === 'value') return;
+
       const targetX = wx - dragOffset.x;
       const targetY = wy - dragOffset.y;
       onUpdate(selection, 'x', { value: targetX });
@@ -577,7 +592,8 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const project = projectRef.current;
       const node = project.nodes[selection];
       if (!node) return null;
-      
+      if (node.type === 'value') return null; // No gizmo for variables
+
       const isVector = node.type === 'vector';
       const showPointEditor = project.meta.activeTool === 'pen' || isVector;
       const showBoundingBox = !isVector; 

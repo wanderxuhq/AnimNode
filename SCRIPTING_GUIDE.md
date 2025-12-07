@@ -1,3 +1,5 @@
+
+
 # AnimNode Scripting API Reference
 
 此文档定义了 AnimNode 脚本系统的编程接口。AI 模型在生成脚本时应严格遵守此规范。
@@ -25,11 +27,29 @@
 | 函数签名 | 返回值 | 描述 |
 | :--- | :--- | :--- |
 | `addNode(type: string)` | `NodeProxy` | 创建新节点。`type` 可选值: `'rect'`, `'circle'`, `'vector'`。默认位置为屏幕中心。 |
+| `addVariable(name: string, value: any)` | `NodeProxy` | 创建全局变量。可以直接通过名称在表达式中使用。 |
 | `removeNode(id: string)` | `void` | 删除指定 ID 的节点。 |
 | `clear()` | `void` | **重要**: 清空当前画布上的所有节点。建议在生成式脚本开头调用。 |
 | `log(...args)` | `void` | 输出信息到控制台。 |
 | `warn(...args)` | `void` | 输出警告。 |
 | `error(...args)` | `void` | 输出错误。 |
+
+### 变量定义语法 (Variable Declaration Syntax)
+为了方便定义参数，脚本支持将顶层 `const`/`let`/`var` 声明自动转换为全局变量节点。
+
+```javascript
+// 下面的语句会自动创建一个名为 'ORBIT_R' 的变量节点，初始值为 150
+const ORBIT_R = 150;
+
+// 支持尾随注释
+const SUN_X = 400; // 太阳的 X 坐标
+
+// 颜色定义 (会自动识别类型)
+const THEME_COLOR = "#ff0000";
+
+// 等同于调用:
+// const ORBIT_R = addVariable('ORBIT_R', 150);
+```
 
 ### 内置对象
 *   `Math`: 标准 JS Math 对象。
@@ -46,10 +66,10 @@
 | 属性 | 类型 | 读/写 | 描述 |
 | :--- | :--- | :--- | :--- |
 | `.id` | `string` | RW | 节点的唯一标识符。修改此属性会重命名节点。**必须唯一**。 |
-| `.type` | `string` | Read | 节点类型 (`rect`, `circle`, `vector`)。 |
+| `.type` | `string` | Read | 节点类型 (`rect`, `circle`, `vector`, `value`)。 |
 
 ### 视觉属性 (Visual Properties)
-所有节点通用的变换和外观属性。
+所有节点通用的变换和外观属性 (不适用于 `value` 类型)。
 
 | 属性名 | 类型 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- |
@@ -79,6 +99,11 @@
 | `d` | `string` | `""` | SVG Path Data 字符串 (e.g. "M 0 0 L 10 10 Z")。 |
 | `stroke` | `color` | `none` | 描边颜色。 |
 | `strokeWidth`| `number` | 0 | 描边宽度。 |
+
+**Type: 'value' (Variable)**
+| 属性名 | 类型 | 默认值 | 描述 |
+| :--- | :--- | :--- | :--- |
+| `value` | `number` | 0 | 变量的值。 |
 
 ---
 
@@ -113,6 +138,7 @@ node.x = Math.sin(t) * 100;
 1.  **`t`** (`number`): 全局时间，单位为秒。
 2.  **`val`** (`any`): 该属性当前的静态基准值。
 3.  **`ctx`** (`object`): 上下文工具对象。
+4.  **`全局变量`**: 直接使用通过 `addVariable` 创建的变量名。
 
 ---
 
@@ -155,17 +181,27 @@ bg.y = 300; // 居中 (600/2)
 bg.fill = "#111";
 ```
 
-### 复杂动画逻辑
+### 全局变量示例
 ```javascript
-const ball = addNode('circle');
-// 使用逻辑判断
-ball.fill = () => {
-    if (Math.sin(t) > 0) return "#ff0000";
-    return "#0000ff";
-};
-// 复杂运动轨迹 (围绕中心 400,300)
-ball.x = () => 400 + Math.sin(t) * 100;
-ball.y = () => 300 + Math.cos(t * 3) * 20;
+clear();
+// 定义太阳参数
+// 下方语句会自动转换为 addVariable('SUN_X', 400)，创建全局变量节点
+const SUN_X = 400; // 太阳的 X 坐标
+const SUN_Y = 300;
+const ORBIT_R = 150;
+
+const sun = addNode('circle');
+sun.radius = 30;
+sun.fill = "#fbbf24";
+sun.x = () => SUN_X; // 直接使用变量
+sun.y = () => SUN_Y;
+
+const earth = addNode('circle');
+earth.radius = 10;
+earth.fill = "#3b82f6";
+// 使用变量计算位置
+earth.x = () => SUN_X + Math.cos(t) * ORBIT_R;
+earth.y = () => SUN_Y + Math.sin(t) * ORBIT_R;
 ```
 
 ### 批量生成 (Grid System)

@@ -2,7 +2,7 @@
 
 import React, { memo, useState, useEffect } from 'react';
 import { Node, Property, Command } from '../types';
-import { Terminal, Code2, MonitorPlay, Move, Layers, Pencil, Trash2 } from 'lucide-react';
+import { Terminal, Code2, MonitorPlay, Move, Layers, Pencil, Trash2, Variable } from 'lucide-react';
 import { PropertyInput } from './PropertyInput';
 
 interface PropertyPanelProps {
@@ -56,6 +56,8 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommi
 
   const shapeProps = allProps
     .filter(([key]) => !TRANSFORM_KEYS.includes(key));
+  
+  const isVariable = selectedNode.type === 'value';
 
   return (
     <div className="w-full bg-zinc-900 flex flex-col h-full overflow-hidden">
@@ -110,52 +112,78 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommi
       <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent">
         {viewMode === 'ui' ? (
             <div className="p-4 space-y-8">
-                {/* Transform Group */}
-                <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-500 uppercase tracking-wider border-b border-zinc-800 pb-1 mb-2">
-                        <Move size={10} />
-                        Transform
-                    </div>
-                    <div className="space-y-4">
-                        {transformProps.map(([key, prop]) => (
-                        <PropertyInput 
-                            key={prop.id} 
-                            propKey={key}
-                            prop={prop} 
-                            nodeId={selectedNode.id} 
-                            nodes={nodes}
-                            onUpdate={onUpdateProperty}
-                            onCommit={onCommit}
-                            autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
-                        />
+                {isVariable ? (
+                    <div className="space-y-3">
+                         <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-500 uppercase tracking-wider border-b border-zinc-800 pb-1 mb-2">
+                             <Variable size={10} />
+                             Global Variable
+                        </div>
+                        <div className="text-xs text-zinc-500 mb-2 italic">
+                            This variable can be used in other expressions directly by name: <span className="text-blue-400 font-mono">{selectedNode.id}</span>
+                        </div>
+                        {allProps.map(([key, prop]) => (
+                            <PropertyInput 
+                                key={prop.id} 
+                                propKey={key} 
+                                prop={prop} 
+                                nodeId={selectedNode.id} 
+                                nodes={nodes}
+                                onUpdate={onUpdateProperty}
+                                onCommit={onCommit}
+                                autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
+                            />
                         ))}
                     </div>
-                </div>
+                ) : (
+                    <>
+                    {/* Transform Group */}
+                    <div className="space-y-3">
+                        <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-500 uppercase tracking-wider border-b border-zinc-800 pb-1 mb-2">
+                            <Move size={10} />
+                            Transform
+                        </div>
+                        <div className="space-y-4">
+                            {transformProps.map(([key, prop]) => (
+                            <PropertyInput 
+                                key={prop.id} 
+                                propKey={key}
+                                prop={prop} 
+                                nodeId={selectedNode.id} 
+                                nodes={nodes}
+                                onUpdate={onUpdateProperty}
+                                onCommit={onCommit}
+                                autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
+                            />
+                            ))}
+                        </div>
+                    </div>
 
-                {/* Shape Group */}
-                <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-500 uppercase tracking-wider border-b border-zinc-800 pb-1 mb-2">
-                         <Layers size={10} />
-                         Styles & Shape
+                    {/* Shape Group */}
+                    <div className="space-y-3">
+                        <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-500 uppercase tracking-wider border-b border-zinc-800 pb-1 mb-2">
+                            <Layers size={10} />
+                            Styles & Shape
+                        </div>
+                        <div className="space-y-4">
+                            {shapeProps.map(([key, prop]) => (
+                            <PropertyInput 
+                                key={prop.id} 
+                                propKey={key} 
+                                prop={prop} 
+                                nodeId={selectedNode.id} 
+                                nodes={nodes}
+                                onUpdate={onUpdateProperty}
+                                onCommit={onCommit}
+                                autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
+                            />
+                            ))}
+                        </div>
                     </div>
-                    <div className="space-y-4">
-                        {shapeProps.map(([key, prop]) => (
-                        <PropertyInput 
-                            key={prop.id} 
-                            propKey={key} 
-                            prop={prop} 
-                            nodeId={selectedNode.id} 
-                            nodes={nodes}
-                            onUpdate={onUpdateProperty}
-                            onCommit={onCommit}
-                            autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
-                        />
-                        ))}
-                    </div>
-                </div>
+                    </>
+                )}
             </div>
         ) : (
-            <div className="flex flex-col h-full">
+            <div className="flex-col h-full flex">
                 <div className="bg-zinc-950 p-2 text-[10px] text-zinc-500 font-mono border-b border-zinc-800 shrink-0">
                     // Direct Node Definition (Read-only view for now)
                 </div>

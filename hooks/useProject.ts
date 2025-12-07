@@ -1,4 +1,3 @@
-
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { ProjectState, Property, ToolType, Command } from '../types';
 import { INITIAL_PROJECT } from '../constants';
@@ -142,7 +141,7 @@ export function useProject() {
   }, []);
 
   // Atomic Action: Add Node
-  const addNode = useCallback((type: 'rect' | 'circle' | 'vector') => {
+  const addNode = useCallback((type: 'rect' | 'circle' | 'vector' | 'value') => {
     const { command, nodeId } = Commands.addNode(type, projectRef.current);
     
     commit(command);

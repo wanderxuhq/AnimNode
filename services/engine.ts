@@ -37,7 +37,19 @@ function createSandbox(context: Record<string, any>) {
         return (window as any)[key];
       }
 
-      // C. Block everything else (window, document, fetch, eval, etc.)
+      // C. Inject Global Variables from Project Nodes
+      // If we have a project reference in context, check if the key matches a 'value' node
+      if (typeof key === 'string' && target.ctx && target.ctx.project) {
+        const node = target.ctx.project.nodes[key];
+        if (node && node.type === 'value') {
+            // Evaluate the variable's 'value' property.
+            // We use ctx.get to handle evaluation, caching, and recursion protection.
+            // This enables "const R = 100; node.x = R;" syntax.
+            return target.ctx.get(key, 'value');
+        }
+      }
+
+      // D. Block everything else (window, document, fetch, eval, etc.)
       // Effectively "hiding" the global environment
       return undefined;
     },
@@ -120,6 +132,11 @@ export function detectLinkCycle(
 
   // Robust regex to find ctx.get('id', 'prop') calls with flexible spacing/quotes
   const codeRegex = /ctx\.get\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)/g;
+  
+  // Regex to find direct variable references (matches any word that is also a node ID of type 'value')
+  // Note: This is a loose check, as parsing JS fully is complex. 
+  // We'll iterate all 'value' nodes and see if their ID appears in the expression.
+  const variableNodes = Object.values(nodes).filter(n => n.type === 'value').map(n => n.id);
 
   while (queue.length > 0) {
     const { n, p } = queue.shift()!;
@@ -141,12 +158,21 @@ export function detectLinkCycle(
       const [nextN, nextP] = prop.value.split(':');
       queue.push({ n: nextN, p: nextP });
     } else if (prop.mode === 'code') {
-      // Analyze code for dependencies
+      // 1. Check for ctx.get calls
       let match;
-      // Reset regex state for each property analysis
       codeRegex.lastIndex = 0;
       while ((match = codeRegex.exec(prop.expression)) !== null) {
           queue.push({ n: match[1], p: match[2] });
+      }
+
+      // 2. Check for implicit variable usage
+      // e.g. "return EARTH_RADIUS * 2" -> implicit dep on node 'EARTH_RADIUS' prop 'value'
+      for (const varId of variableNodes) {
+          // Simple word boundary check
+          const varRegex = new RegExp(`\\b${varId}\\b`);
+          if (varRegex.test(prop.expression)) {
+              queue.push({ n: varId, p: 'value' });
+          }
       }
     }
   }
@@ -227,6 +253,7 @@ export function evaluateProperty(
              ...context,
              audio: context.audio || { bass: 0, mid: 0, high: 0, treble: 0, fft: [] },
              // get is already in context
+             // project is already in context (injected by Viewport/renderer)
           },
           // Create a proxied console object
           console: {
@@ -249,9 +276,9 @@ export function evaluateProperty(
       // 3. Execution (Sandboxed)
       // "with(sandbox)" forces all variable lookups to go through the proxy "has" trap.
       // Since "has" returns true, it tries to get it from the proxy.
-      // The proxy "get" trap then decides whether to allow it (whitelisted) or block it (undefined).
+      // The proxy "get" trap then decides whether to allow it (whitelisted),
+      // look it up in global variables (via project nodes), or block it (undefined).
       
-      // FIX: Add newlines to prevent inline comments (//) from commenting out the closing brace '}'
       const func = new Function('sandbox', `with(sandbox) { \n${prop.expression}\n }`);
       const result = func(sandbox);
 
@@ -281,6 +308,7 @@ export function renderSVG(project: ProjectState, audioData?: any) {
   
   const evalContext: any = { 
       audio: audioData || {},
+      project: project, // Inject project for global variable lookup
       get: (nodeId: string, propKey: string, depth: number = 0) => {
           const node = project.nodes[nodeId];
           if (!node) return 0;
@@ -292,6 +320,7 @@ export function renderSVG(project: ProjectState, audioData?: any) {
   const children = project.rootNodeIds.map(nodeId => {
     const node = project.nodes[nodeId];
     if (!node) return null;
+    if (node.type === 'value') return null; // Do not render variables visually in SVG
 
     const evalProp = (key: string, def: any = 0) => 
         evaluateProperty(node.properties[key], currentTime, evalContext, 0, { nodeId, propKey: key }) ?? def;

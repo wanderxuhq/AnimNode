@@ -1,11 +1,9 @@
-
-
 import React from 'react';
-import { Square, Circle, PenTool, MousePointer2, Music } from 'lucide-react';
+import { Square, Circle, PenTool, MousePointer2, Music, Variable } from 'lucide-react';
 import { ToolType } from '../types';
 
 interface ToolbarProps {
-  onAddNode: (type: 'rect' | 'circle' | 'vector') => void;
+  onAddNode: (type: 'rect' | 'circle' | 'vector' | 'value') => void;
   onAddAudio: () => void;
   activeTool: ToolType;
   onSetTool: (t: ToolType) => void;
@@ -65,6 +63,18 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onAddNode, onAddAudio, activeT
             </button>
              <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-black text-xs rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-50 pointer-events-none">
                 Circle
+            </span>
+        </div>
+
+        <div className="tooltip-container group relative">
+            <button 
+                onClick={() => onAddNode('value')}
+                className="p-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
+            >
+                <Variable size={20} />
+            </button>
+             <span className="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-1 bg-black text-xs rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-50 pointer-events-none">
+                Variable
             </span>
         </div>
       </div>

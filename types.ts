@@ -23,7 +23,7 @@ export interface Property {
 
 export interface Node {
   id: string;
-  type: 'rect' | 'circle' | 'text' | 'group' | 'vector';
+  type: 'rect' | 'circle' | 'text' | 'group' | 'vector' | 'value';
   parentId: string | null;
   properties: Record<string, Property>;
 }

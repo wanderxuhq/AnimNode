@@ -7,9 +7,10 @@ import { Toolbar } from './components/Toolbar';
 import { useProject } from './hooks/useProject';
 import { audioController } from './services/audio';
 import { exportToPNG, exportToSVG } from './services/export';
-import { Square, Circle, Download, Layout, Layers, Volume2, Network, Cpu, Image, FileImage, FileJson, GripVertical, History as HistoryIcon, Bug } from 'lucide-react';
+import { Square, Circle, Download, Layout, Layers, Volume2, Network, Cpu, Image, FileImage, FileJson, GripVertical, History as HistoryIcon, Bug, Variable } from 'lucide-react';
 import { HistoryPanel } from './components/HistoryPanel';
 import { DebugPanel } from './components/DebugPanel';
+import { Node } from './types';
 
 export default function App() {
   const { 
@@ -224,6 +225,13 @@ export default function App() {
 
   const isGraphMode = project.meta.viewMode === 'graph';
 
+  const getNodeIcon = (node: Node) => {
+      if (node.type === 'rect') return <Square size={12}/>;
+      if (node.type === 'circle') return <Circle size={12}/>;
+      if (node.type === 'value') return <Variable size={12} className="text-yellow-400"/>;
+      return <Layout size={12} className="text-emerald-500"/>;
+  };
+
   return (
     <div className="flex flex-col h-screen w-full bg-black text-zinc-300 font-sans overflow-hidden">
       <input type="file" ref={fileInputRef} className="hidden" accept="audio/*" onChange={handleAudioUpload} />
@@ -317,7 +325,10 @@ export default function App() {
                 <div className="flex-1 overflow-y-auto p-2 space-y-1 relative" onDragLeave={handleDragLeave}>
                     {/* Reverse map to show Top layer at Top of list */}
                     {project.rootNodeIds.map((id, index) => ({ id, index })).reverse().map(({ id, index }) => {
+                         const node = project.nodes[id];
+                         if (!node) return null;
                          const isDragTarget = dragOverId === id;
+                         
                          return (
                             <div 
                                 key={id}
@@ -341,9 +352,7 @@ export default function App() {
                                 <GripVertical size={12} className="text-zinc-600 opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing shrink-0" />
                                 <span className="text-[10px] text-zinc-600 font-mono shrink-0 select-none mr-1 opacity-50">#{index}</span>
                                 
-                                {project.nodes[id].type === 'rect' ? <Square size={12}/> : 
-                                 project.nodes[id].type === 'circle' ? <Circle size={12}/> :
-                                 <Layout size={12} className="text-emerald-500"/>}
+                                {getNodeIcon(node)}
                                 
                                 <span className="truncate flex-1 font-mono text-xs">{id}</span>
                             </div>
