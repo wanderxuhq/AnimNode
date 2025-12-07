@@ -125,6 +125,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   useEffect(() => {
     let frameCount = 0;
     let lastTime = performance.now();
+    let rAFId = 0;
 
     const loop = () => {
       const now = performance.now();
@@ -215,12 +216,15 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       }
       
       setTick(t => t + 1);
-      rAF.current = requestAnimationFrame(loop);
+      rAFId = requestAnimationFrame(loop);
+      rAF.current = rAFId;
     };
     
-    rAF.current = requestAnimationFrame(loop);
+    rAFId = requestAnimationFrame(loop);
+    rAF.current = rAFId;
+
     return () => {
-      if (rAF.current) cancelAnimationFrame(rAF.current);
+      cancelAnimationFrame(rAFId);
     };
   }, [gpuReady]);
 

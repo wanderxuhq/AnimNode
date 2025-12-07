@@ -11,6 +11,12 @@ export function useProject() {
   const [project, setProject] = useState<ProjectState>(INITIAL_PROJECT);
   const projectRef = useRef<ProjectState>(project);
 
+  // --- TIME ANCHOR ---
+  // Stores the reference point for absolute time calculation
+  // startWallTime: The performance.now() timestamp when playback started
+  // startProjectTime: The project.meta.currentTime when playback started
+  const timeAnchorRef = useRef<{ startWallTime: number, startProjectTime: number }>({ startWallTime: 0, startProjectTime: 0 });
+
   // --- HISTORY STATE ---
   const [history, setHistory] = useState<{ past: Command[], future: Command[] }>({ past: [], future: [] });
   const historyRef = useRef(history);
@@ -252,8 +258,17 @@ export function useProject() {
   const togglePlay = useCallback(() => {
     setProject(p => {
         const isPlaying = !p.meta.isPlaying;
-        if (isPlaying) audioController.play(p.meta.currentTime);
-        else audioController.stop();
+        if (isPlaying) {
+             // START PLAYBACK
+             // We anchor the time logic: "At this wall clock time, the project was at this frame."
+             timeAnchorRef.current = {
+                 startWallTime: performance.now(),
+                 startProjectTime: p.meta.currentTime
+             };
+             audioController.play(p.meta.currentTime);
+        } else {
+             audioController.stop();
+        }
         const next = { ...p, meta: { ...p.meta, isPlaying } };
         projectRef.current = next;
         return next;
@@ -278,8 +293,8 @@ export function useProject() {
   }, []);
 
   // Animation Loop
+  // Uses absolute time differencing to prevent drift/jitter
   useEffect(() => {
-    let lastTime = performance.now();
     let frameId = 0;
 
     const loop = () => {
@@ -287,13 +302,24 @@ export function useProject() {
       
       if (current.meta.isPlaying) {
         const now = performance.now();
-        const delta = (now - lastTime) / 1000;
-        lastTime = now;
+        const duration = current.meta.duration;
+        
+        // Calculate elapsed time since play started
+        const elapsed = (now - timeAnchorRef.current.startWallTime) / 1000;
+        
+        // Calculate new time based on start anchor + elapsed
+        let nextTime = timeAnchorRef.current.startProjectTime + elapsed;
 
-        let nextTime = current.meta.currentTime + delta;
-        if (nextTime > current.meta.duration) {
-            nextTime = 0;
-            audioController.play(0);
+        // Loop Logic
+        if (nextTime >= duration) {
+            nextTime = nextTime % duration;
+            // Re-anchor to prevent floating point precision loss over long sessions
+            // and ensure clean looping behavior
+            timeAnchorRef.current = {
+                startWallTime: now,
+                startProjectTime: nextTime
+            };
+            audioController.play(nextTime);
         }
 
         const nextProject = {
@@ -303,8 +329,6 @@ export function useProject() {
 
         projectRef.current = nextProject;
         setProject(nextProject);
-      } else {
-        lastTime = performance.now();
       }
 
       frameId = requestAnimationFrame(loop);
