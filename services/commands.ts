@@ -4,62 +4,44 @@ import { createNode } from './factory';
 // Helper to extract function body
 const extractBody = (fn: Function | string): string => {
     let str = fn.toString().trim();
-    
-    // Robust arrow function detection
-    // Matches: (a,b) => ... or arg => ... or () => ...
     const arrowRegex = /^(\([^\)]*\)|[a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>/;
     const match = arrowRegex.exec(str);
-    
     if (match) {
-        // The body starts after the arrow
         const bodyStart = match.index + match[0].length;
         let body = str.substring(bodyStart).trim();
-        
-        // Remove wrapping braces if present { return ... } -> return ...
         if (body.startsWith('{') && body.endsWith('}')) {
             return body.substring(1, body.length - 1).trim();
         }
         return `return ${body};`;
     }
-
-    // Handle standard functions function() { ... }
     const start = str.indexOf('{');
     const last = str.lastIndexOf('}');
     if (start > -1 && last > -1) {
         return str.substring(start + 1, last).trim();
     }
-    
-    // Fallback for simple return strings or direct expressions
     return str; 
 };
 
 /**
  * Commands Factory
- * Encapsulates all logic for modifying the project state in an Undo/Redo compatible way.
  */
 export const Commands = {
-  
-  /**
-   * Add a new node to the project
-   */
   addNode: (type: 'rect' | 'circle' | 'vector' | 'value', project: ProjectState): { command: Command, nodeId: string } => {
-    // Calculate new ID
     let index = 0;
-    let newId = `${type}_${index}`;
+    let prefix: string = type;
+    if (type === 'value') prefix = 'var';
+    let newId = `${prefix}_${index}`;
     while (project.nodes[newId]) {
         index++;
-        newId = `${type}_${index}`;
+        newId = `${prefix}_${index}`;
     }
-
     const newNode = createNode(type, newId);
-
     const applyAdd = (p: ProjectState) => ({
         ...p,
         nodes: { ...p.nodes, [newNode.id]: newNode },
         rootNodeIds: [newNode.id, ...p.rootNodeIds],
         selection: newNode.id
     });
-
     const applyRemove = (p: ProjectState) => {
         const { [newNode.id]: _, ...remainingNodes } = p.nodes;
         return {
@@ -69,7 +51,7 @@ export const Commands = {
             selection: p.selection === newNode.id ? null : p.selection
         };
     };
-
+    
     const command: Command = {
         id: crypto.randomUUID(),
         name: `New ${newNode.id}`,
@@ -78,18 +60,12 @@ export const Commands = {
         redo: applyAdd
     };
 
-    return { command, nodeId: newId };
+    return { command, nodeId: newNode.id };
   },
-
-  /**
-   * Remove a node from the project
-   */
   removeNode: (nodeId: string, project: ProjectState): Command => {
     const node = project.nodes[nodeId];
     if (!node) throw new Error(`Node ${nodeId} not found`);
-
     const originalIndex = project.rootNodeIds.indexOf(nodeId);
-
     const performRemove = (s: ProjectState) => {
        const { [nodeId]: _, ...remainingNodes } = s.nodes;
        const newRoots = s.rootNodeIds.filter(id => id !== nodeId);
@@ -100,16 +76,13 @@ export const Commands = {
            selection: s.selection === nodeId ? null : s.selection
        };
     };
-
     const performRestore = (s: ProjectState) => {
         const newRoots = [...s.rootNodeIds];
-        // Insert back at original index to preserve order
         if (originalIndex >= 0 && originalIndex <= newRoots.length) {
             newRoots.splice(originalIndex, 0, nodeId);
         } else {
             newRoots.push(nodeId);
         }
-
         return {
             ...s,
             nodes: { ...s.nodes, [nodeId]: node },
@@ -117,7 +90,6 @@ export const Commands = {
             selection: nodeId 
         };
     };
-
     return {
         id: crypto.randomUUID(),
         name: `Delete ${nodeId}`,
@@ -126,36 +98,29 @@ export const Commands = {
         redo: performRemove
     };
   },
-
-  /**
-   * Rename a node and update all references to it
-   */
   renameNode: (oldId: string, newId: string, project: ProjectState): Command | null => {
     const fromId = oldId.trim();
     const toId = newId.trim();
-
+    
     if (!fromId || !toId) return null;
     if (fromId === toId) return null;
-    if (project.nodes[toId]) return null; // ID collision
-    
-    // Safety: check if node exists
-    if (!project.nodes[fromId] && !project.rootNodeIds.includes(fromId)) return null;
+    if (project.nodes[toId]) return null; // Target collision
+    if (!project.nodes[fromId]) return null; // Source missing
 
     const performRename = (state: ProjectState, fId: string, tId: string) => {
         const node = state.nodes[fId];
-        if (!node) return state;
+        if (!node) return state; // Safety check
 
-        // Create new node with new ID
         const newNode = { ...node, id: tId };
-        
-        // 1. Rebuild nodes map
         const newNodes: Record<string, Node> = {};
+        
+        // Rebuild nodes map with new ID
         Object.keys(state.nodes).forEach(key => {
             if (key === fId) newNodes[tId] = newNode;
             else newNodes[key] = state.nodes[key];
         });
 
-        // 2. Update references in other nodes (links/code)
+        // Update references in ALL nodes
         Object.values(newNodes).forEach((n: Node) => {
             let propsUpdated = false;
             const newProps = { ...n.properties };
@@ -163,24 +128,37 @@ export const Commands = {
             Object.keys(n.properties).forEach(pKey => {
                 const prop = n.properties[pKey];
                 
-                // Fix Link References
+                // Update Links
                 if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.startsWith(fId + ':')) {
                     const [, suffix] = prop.value.split(':');
                     newProps[pKey] = { ...prop, value: `${tId}:${suffix}` };
                     propsUpdated = true;
                 }
                 
-                // Fix Code References (Regex replace)
+                // Update Code References (ctx.get)
                 if (prop.mode === 'code') {
-                    // Look for ctx.get('OLD_ID', ...)
                     const regex = new RegExp(`ctx\\.get\\(['"]${fId}['"]`, 'g');
-                    if (regex.test(prop.expression)) {
-                        newProps[pKey] = { ...prop, expression: prop.expression.replace(regex, `ctx.get('${tId}'`) };
+                    let newExpr = prop.expression;
+                    
+                    if (regex.test(newExpr)) {
+                        newExpr = newExpr.replace(regex, `ctx.get('${tId}'`);
                         propsUpdated = true;
+                    }
+                    
+                    // Update Variable References (e.g. "return MY_VAR")
+                    // Use word boundaries to avoid replacing partial matches
+                    const varRegex = new RegExp(`\\b${fId}\\b`, 'g');
+                    if (varRegex.test(newExpr)) {
+                         newExpr = newExpr.replace(varRegex, tId);
+                         propsUpdated = true;
+                    }
+
+                    if (propsUpdated) {
+                        newProps[pKey] = { ...prop, expression: newExpr };
                     }
                 }
             });
-            
+
             if (propsUpdated) {
                 newNodes[n.id] = { ...n, properties: newProps };
             }
@@ -199,254 +177,145 @@ export const Commands = {
 
     return {
         id: crypto.randomUUID(),
-        name: `Rename ${fromId} -> ${toId}`,
+        name: `Rename ${oldId} -> ${newId}`,
         timestamp: Date.now(),
-        undo: (s) => performRename(s, toId, fromId), // Inverse
+        undo: (s) => performRename(s, toId, fromId),
         redo: (s) => performRename(s, fromId, toId)
     };
   },
-
-  /**
-   * Reorder a node in the list
-   */
-  reorderNode: (fromIndex: number, toIndex: number): Command => {
-    const reorder = (s: ProjectState, from: number, to: number) => {
-        const newRoots = [...s.rootNodeIds];
-        const [moved] = newRoots.splice(from, 1);
-        newRoots.splice(to, 0, moved);
-        return { ...s, rootNodeIds: newRoots };
-    };
-
-    return {
-        id: crypto.randomUUID(),
-        name: `Reorder Node`,
-        timestamp: Date.now(),
-        undo: (s) => reorder(s, toIndex, fromIndex),
-        redo: (s) => reorder(s, fromIndex, toIndex)
-    };
-  },
-
-  /**
-   * Update Node Metadata
-   */
-  updateNodeMeta: (nodeId: string, meta: Partial<Node>, project: ProjectState): Command => {
-    const node = project.nodes[nodeId];
-    if (!node) throw new Error(`Node ${nodeId} not found`);
-    
-    const oldMeta: Partial<Node> = {};
-    (Object.keys(meta) as Array<keyof Node>).forEach(key => {
-        // @ts-ignore
-        oldMeta[key] = node[key];
-    });
-
-    const apply = (s: ProjectState, updates: Partial<Node>) => {
-        const n = s.nodes[nodeId];
-        if (!n) return s;
-        return {
-            ...s,
-            nodes: {
-                ...s.nodes,
-                [nodeId]: { ...n, ...updates }
-            }
-        };
-    };
-
-    return {
-        id: crypto.randomUUID(),
-        name: `Update ${nodeId}`,
-        timestamp: Date.now(),
-        undo: (s) => apply(s, oldMeta),
-        redo: (s) => apply(s, meta)
-    };
-  },
-
-  /**
-   * Unified Property Setter.
-   * Handles static values, expressions (functions), and partial updates.
-   * Automatically switches modes based on input type unless explicit partial is provided.
-   */
-  set: (
-      project: ProjectState,
-      nodeId: string, 
-      propKey: string, 
-      input: any, 
-      prevInput?: any, 
-      description?: string
-  ): Command => {
-      // Validate existence in the CURRENT project state passed in
-      const node = project.nodes[nodeId];
-      if (!node) throw new Error(`Node ${nodeId} not found in current state`);
-      const prop = node.properties[propKey];
-      if (!prop) throw new Error(`Property ${propKey} not found on node ${nodeId}`);
-
-      // --- Helper to resolve a raw input to a Property Partial ---
-      const resolveState = (val: any): Partial<Property> => {
-          if (typeof val === 'function') {
-              return { mode: 'code', expression: extractBody(val) };
-          }
-          if (val && typeof val === 'object' && 'mode' in val) {
-              return val;
-          }
-          return { mode: 'static', value: val };
-      };
-
-      const newState = resolveState(input);
-      
-      let oldState: Partial<Property>;
-      if (prevInput !== undefined) {
-          oldState = resolveState(prevInput);
-      } else {
-          oldState = {
-            mode: prop.mode,
-            value: prop.value,
-            expression: prop.expression
-          };
-      }
-      
-      // Auto-sync expression for static values
-      if (newState.mode === 'static' && newState.value !== undefined) {
-          const serialized = typeof newState.value === 'string' ? `"${newState.value}"` : JSON.stringify(newState.value);
-          newState.expression = `return ${serialized};`;
-      }
-      
-      // Type Coercion for numbers
-      if (newState.mode === 'static' && prop.type === 'number' && newState.value !== undefined) {
-          const num = parseFloat(String(newState.value));
-          if (!isNaN(num)) newState.value = num;
-      }
-
-      const cmdName = description || `Set ${prop.name}`;
-
-      const apply = (s: ProjectState, updates: Partial<Property>) => {
-          const n = s.nodes[nodeId];
-          if (!n) return s;
-          return {
-              ...s,
-              nodes: {
-                  ...s.nodes,
-                  [nodeId]: {
-                      ...n,
-                      properties: {
-                          ...n.properties,
-                          [propKey]: { ...n.properties[propKey], ...updates }
-                      }
+  moveNode: (nodeId: string, fromPos: {x:number, y:number}, toPos: {x:number, y:number}): Command => {
+      const applyMove = (s: ProjectState, pos: {x:number, y:number}) => {
+          const node = s.nodes[nodeId];
+          if (!node) return s;
+          const nextNodes = {
+              ...s.nodes,
+              [nodeId]: {
+                  ...node,
+                  properties: {
+                      ...node.properties,
+                      x: { ...node.properties.x, value: pos.x },
+                      y: { ...node.properties.y, value: pos.y }
                   }
               }
           };
+          return { ...s, nodes: nextNodes };
       };
-
-      return {
-          id: crypto.randomUUID(),
-          name: cmdName,
-          timestamp: Date.now(),
-          undo: (s) => apply(s, oldState),
-          redo: (s) => apply(s, newState)
-      };
-  },
-
-  /**
-   * Move a node (Transform X/Y)
-   */
-  moveNode: (
-      nodeId: string,
-      oldPos: { x: number, y: number },
-      newPos: { x: number, y: number }
-  ): Command => {
-      const applyPos = (s: ProjectState, x: number, y: number) => {
-          const n = s.nodes[nodeId];
-          if (!n) return s;
-          
-          // Helper to create static prop update
-          // This ensures we switch to static mode if it was code/linked before, which is standard for drag operations
-          const updateProp = (prop: Property, val: number): Property => ({
-              ...prop,
-              mode: 'static',
-              value: val,
-              expression: `return ${val};`
-          });
-
-          return {
-              ...s,
-              nodes: {
-                  ...s.nodes,
-                  [nodeId]: {
-                      ...n,
-                      properties: {
-                          ...n.properties,
-                          x: updateProp(n.properties.x, x),
-                          y: updateProp(n.properties.y, y)
-                      }
-                  }
-              }
-          };
-      };
-
       return {
           id: crypto.randomUUID(),
           name: `Move ${nodeId}`,
           timestamp: Date.now(),
-          undo: (s) => applyPos(s, oldPos.x, oldPos.y),
-          redo: (s) => applyPos(s, newPos.x, newPos.y)
+          undo: (s) => applyMove(s, fromPos),
+          redo: (s) => applyMove(s, toPos)
       };
   },
-
-  /**
-   * Combine multiple commands into one (Batch)
-   */
-  batch: (commands: Command[], name?: string): Command => {
+  reorderNode: (fromIndex: number, toIndex: number): Command => {
+      const applyReorder = (s: ProjectState, f: number, t: number) => {
+          const newRoots = [...s.rootNodeIds];
+          const [removed] = newRoots.splice(f, 1);
+          newRoots.splice(t, 0, removed);
+          return { ...s, rootNodeIds: newRoots };
+      };
       return {
           id: crypto.randomUUID(),
-          name: name || `Batch (${commands.length})`,
+          name: `Reorder Node`,
+          timestamp: Date.now(),
+          undo: (s) => applyReorder(s, toIndex, fromIndex),
+          redo: (s) => applyReorder(s, fromIndex, toIndex)
+      };
+  },
+  // Unified Property Set Command (Handles all modes)
+  set: (
+    project: ProjectState, 
+    nodeId: string, 
+    propKey: string, 
+    newValue: Partial<Property>, 
+    oldValue?: Partial<Property>,
+    label?: string
+  ): Command => {
+      const node = project.nodes[nodeId];
+      if (!node || !node.properties[propKey]) throw new Error("Property not found");
+      const currentProp = node.properties[propKey];
+      
+      const prev = oldValue || { 
+          mode: currentProp.mode, 
+          value: currentProp.value, 
+          expression: currentProp.expression,
+          keyframes: currentProp.keyframes
+      };
+
+      // Safeguard against functions being passed directly to logic that expects serializable data
+      // (Though redo/undo function closures handle refs fine in memory)
+      const next = { ...prev, ...newValue };
+      
+      const apply = (s: ProjectState, val: Partial<Property>) => {
+          const n = s.nodes[nodeId];
+          if (!n) return s;
+          return {
+              ...s,
+              nodes: {
+                  ...s.nodes,
+                  [nodeId]: {
+                      ...n,
+                      properties: {
+                          ...n.properties,
+                          [propKey]: { ...n.properties[propKey], ...val }
+                      }
+                  }
+              }
+          };
+      };
+
+      return {
+          id: crypto.randomUUID(),
+          name: label || `Set ${propKey}`,
+          timestamp: Date.now(),
+          undo: (s) => apply(s, prev),
+          redo: (s) => apply(s, next)
+      };
+  },
+  batch: (commands: Command[], label: string): Command => {
+      return {
+          id: crypto.randomUUID(),
+          name: label,
           timestamp: Date.now(),
           undo: (s) => {
-              let next = s;
               // Undo in reverse order
+              let state = s;
               for (let i = commands.length - 1; i >= 0; i--) {
-                  next = commands[i].undo(next);
+                  state = commands[i].undo(state);
               }
-              return next;
+              return state;
           },
           redo: (s) => {
-              let next = s;
+              let state = s;
               for (const cmd of commands) {
-                  next = cmd.redo(next);
+                  state = cmd.redo(state);
               }
-              return next;
+              return state;
           }
       };
   },
-
-  /**
-   * Clear the project (reset to empty)
-   */
   clearProject: (project: ProjectState): Command => {
-      const oldState = {
-          nodes: project.nodes,
-          rootNodeIds: project.rootNodeIds,
-          selection: project.selection
-      };
-
-      const clear = (s: ProjectState) => ({
-          ...s,
-          nodes: {},
-          rootNodeIds: [],
-          selection: null
-      });
-
-      const restore = (s: ProjectState) => ({
-          ...s,
-          nodes: oldState.nodes,
-          rootNodeIds: oldState.rootNodeIds,
-          selection: oldState.selection
-      });
-
+      const oldNodes = project.nodes;
+      const oldRoots = project.rootNodeIds;
+      const oldSelection = project.selection;
+      
       return {
           id: crypto.randomUUID(),
           name: 'Clear Project',
           timestamp: Date.now(),
-          undo: restore,
-          redo: clear
+          undo: (s) => ({
+              ...s,
+              nodes: oldNodes,
+              rootNodeIds: oldRoots,
+              selection: oldSelection
+          }),
+          redo: (s) => ({
+              ...s,
+              nodes: {},
+              rootNodeIds: [],
+              selection: null
+          })
       };
   }
-
 };

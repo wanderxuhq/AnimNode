@@ -2,7 +2,7 @@
 
 // This defines the "File Format" structure
 
-export type ValueType = 'number' | 'color' | 'vector2' | 'boolean' | 'string';
+export type ValueType = 'number' | 'color' | 'vector2' | 'boolean' | 'string' | 'object' | 'array' | 'function';
 
 export interface Keyframe {
   time: number; // in seconds

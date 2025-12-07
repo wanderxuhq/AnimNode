@@ -428,8 +428,8 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
                        projectRef.current,
                        editingPathId,
                        'd',
-                       endD, // Current value as input
-                       startD, // Previous value
+                       { value: endD },
+                       { value: startD },
                        "Edit Path"
                    ));
               }

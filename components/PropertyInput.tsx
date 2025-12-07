@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Property, Node, Command } from '../types';
-import { Code, Key, Hash, Link as LinkIcon, AlertTriangle } from 'lucide-react';
+import { Code, Key, Hash, Link as LinkIcon, AlertTriangle, Braces, List, FunctionSquare } from 'lucide-react';
 import { detectLinkCycle } from '../services/engine';
 import { consoleService } from '../services/console';
 import { Commands } from '../services/commands';
@@ -16,41 +16,41 @@ interface PropertyInputProps {
 }
 
 export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nodeId, nodes, onUpdate, onCommit, autoFocusTrigger }) => {
-  // Local state for the input field value (what the user sees)
   const [localValue, setLocalValue] = useState<string>(String(prop.value));
   const [localExpression, setLocalExpression] = useState<string>(prop.expression);
 
-  // Track if we are currently editing (focused/interacting)
-  const isEditingRef = useRef(false);
-  
-  // Store the value AT THE START of the interaction for Undo history
-  // For 'code' mode, we store the full partial { mode: 'code', expression: ... }
-  // For 'static' mode, we store the full partial { mode: 'static', value: ... }
-  // This ensures Commands.set can restore the exact previous state/mode.
-  const snapshotRef = useRef<Partial<Property> | null>(null);
+  // For object/array types, localValue stores the stringified JSON
+  const [jsonError, setJsonError] = useState<string | null>(null);
 
-  // Refs for auto-focus
+  const isEditingRef = useRef(false);
+  const snapshotRef = useRef<Partial<Property> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // State for Stale Closure Protection during cleanup/unmount
   const latestState = useRef({ localValue, localExpression, prop, nodeId, propKey, nodes });
 
-  // Link Mode State
   const [linkTargetNode, setLinkTargetNode] = useState<string>("");
   const [linkTargetProp, setLinkTargetProp] = useState<string>("");
   const [cycleDetected, setCycleDetected] = useState<boolean>(false);
 
-  // --- SYNC STATE REFS ---
   useEffect(() => {
       latestState.current = { localValue, localExpression, prop, nodeId, propKey, nodes };
   }, [localValue, localExpression, prop, nodeId, propKey, nodes]);
 
-  // --- SYNC EXTERNAL CHANGES ---
   useEffect(() => {
     if (!isEditingRef.current) {
-        setLocalValue(String(prop.value));
+        if (prop.type === 'object' || prop.type === 'array') {
+            try {
+                setLocalValue(JSON.stringify(prop.value, null, 2));
+            } catch (e) {
+                setLocalValue(String(prop.value));
+            }
+        } else if (prop.type === 'function') {
+            setLocalValue(prop.value ? prop.value.toString() : '() => {}');
+        } else {
+            setLocalValue(String(prop.value));
+        }
         setLocalExpression(prop.expression);
+        setJsonError(null);
     }
     if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.includes(':')) {
         const [nid, pid] = prop.value.split(':');
@@ -59,14 +59,11 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
             setLinkTargetProp(pid);
         }
     }
-  }, [prop.value, prop.expression, prop.mode, nodes]); 
-
-  // --- HISTORY LOGIC ---
+  }, [prop.value, prop.expression, prop.mode, nodes, prop.type]); 
 
   const captureSnapshot = () => {
       if (!isEditingRef.current) {
           isEditingRef.current = true;
-          // IMPORTANT: Capture the FULL state source of truth before edit
           if (snapshotRef.current === null) {
               snapshotRef.current = {
                   mode: prop.mode,
@@ -77,10 +74,8 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       }
   };
 
-  // Robust Commit Function
   const performCommit = () => {
       const state = latestState.current;
-      
       if (!isEditingRef.current) return;
 
       const oldState = snapshotRef.current ?? { mode: state.prop.mode, value: state.prop.value, expression: state.prop.expression };
@@ -90,12 +85,30 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
 
       if (state.prop.mode === 'static') {
           let val: any = state.localValue;
+          
           if (state.prop.type === 'number') {
               const parsed = parseFloat(val);
               val = isNaN(parsed) ? (oldState.value ?? 0) : parsed;
+          } else if (state.prop.type === 'object' || state.prop.type === 'array') {
+              try {
+                  val = JSON.parse(state.localValue);
+                  setJsonError(null);
+              } catch (e) {
+                  // If JSON invalid, allow reverting or just abort
+                  setJsonError("Invalid JSON");
+                  return; // Abort commit
+              }
+          } else if (state.prop.type === 'function') {
+              // Functions cannot be edited in static mode effectively (unsafe eval). 
+              // Just revert to old value if user tried to type here.
+              // Real editing happens in Code mode for functions.
+              val = oldState.value;
           }
+
           newState = { mode: 'static', value: val };
-          hasChanged = val != oldState.value || oldState.mode !== 'static';
+          // Deep compare for objects? Simplified check here.
+          const valChanged = JSON.stringify(val) !== JSON.stringify(oldState.value);
+          hasChanged = valChanged || oldState.mode !== 'static';
 
       } else if (state.prop.mode === 'code') {
           newState = { mode: 'code', expression: state.localExpression };
@@ -108,32 +121,21 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
 
       if (hasChanged) {
           consoleService.log('info', [`Commit ${state.propKey}`], { nodeId: state.nodeId, propKey: state.propKey });
-          
-          // Use Unified Commands.set
-          // We pass explicit partials to avoid ambiguity
           const command = Commands.set(
-              // We can't access 'project' directly here easily without prop drilling or context.
-              // But Commands.set needs project mainly to lookup node/prop existence and fallback oldState.
-              // Since we provide prevInput (oldState), we can pass a dummy or partial project if needed, 
-              // BUT 'Commands.set' logic expects 'project.nodes'.
-              // We have 'nodes' in props. We can construct a minimal project object.
               { nodes: state.nodes } as any, 
               state.nodeId,
               state.propKey,
-              newState, // Input
-              oldState, // Prev Input
+              newState, 
+              oldState, 
               `Set ${state.prop.name}`
           );
-          
           onCommit(command);
       }
 
-      // Reset
       isEditingRef.current = false;
       snapshotRef.current = null;
   };
 
-  // Unmount Protection
   useEffect(() => {
       return () => {
           if (isEditingRef.current) {
@@ -142,36 +144,32 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       };
   }, []);
 
-  // --- HANDLERS ---
+  const handleFocus = () => captureSnapshot();
 
-  const handleFocus = () => {
-      captureSnapshot();
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       captureSnapshot();
       const val = e.target.value;
       setLocalValue(val);
       
-      let updateVal: any = val;
       if (prop.type === 'number') {
           const num = parseFloat(val);
-          if (!isNaN(num)) updateVal = num;
+          if (!isNaN(num)) onUpdate(nodeId, propKey, { value: num });
+      } else if (prop.type === 'string' || prop.type === 'color') {
+          onUpdate(nodeId, propKey, { value: val });
       }
-      onUpdate(nodeId, propKey, { value: updateVal });
+      
+      // For Object/Array, we check validity but don't live update the engine to avoid partial JSON
+      if (prop.type === 'object' || prop.type === 'array') {
+          try {
+             JSON.parse(val);
+             setJsonError(null);
+          } catch(e) {
+             setJsonError("Invalid JSON");
+          }
+      }
   };
 
   const handleBlur = () => {
-      if (prop.type === 'number') {
-          const num = parseFloat(localValue);
-          if (!isNaN(num)) {
-              setLocalValue(String(num));
-          } else {
-              const revertVal = snapshotRef.current?.value ?? prop.value;
-              setLocalValue(String(revertVal));
-              onUpdate(nodeId, propKey, { value: revertVal });
-          }
-      }
       performCommit();
   };
 
@@ -185,6 +183,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   const handleCodeBlur = () => {
       consoleService.stopEditing(nodeId, propKey);
       try {
+          // Syntax check
           new Function('t', 'val', 'ctx', 'console', localExpression);
       } catch (e: any) {
           consoleService.log('error', [e.message], { nodeId, propKey });
@@ -193,24 +192,24 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter') {
-          (e.target as HTMLElement).blur();
-          return;
+      if (e.key === 'Enter' && !e.shiftKey) {
+           if (prop.type !== 'object' && prop.type !== 'array' && prop.mode !== 'code' && prop.type !== 'function') {
+               (e.target as HTMLElement).blur();
+               return;
+           }
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
            const start = snapshotRef.current;
            if (start) {
                e.preventDefault();
                e.stopPropagation(); 
-               // Cancel Edit
                if (prop.mode === 'code') {
                    setLocalExpression(String(start.expression));
                    onUpdate(nodeId, propKey, { expression: start.expression });
                } else {
-                   setLocalValue(String(start.value));
-                   let val: any = start.value;
-                   if (prop.type === 'number') val = parseFloat(String(start.value));
-                   onUpdate(nodeId, propKey, { value: val });
+                   const valStr = (prop.type === 'object' || prop.type === 'array') ? JSON.stringify(start.value,null,2) : String(start.value);
+                   setLocalValue(valStr);
+                   onUpdate(nodeId, propKey, { value: start.value });
                }
            }
       }
@@ -219,49 +218,27 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   const handleModeChange = (mode: Property['mode']) => {
     const oldMode = prop.mode;
     if (oldMode === mode) return;
-    
     const oldState = { mode: oldMode, value: prop.value, expression: prop.expression };
     const newState = { mode: mode };
-
     onUpdate(nodeId, propKey, { mode });
-    
-    // Use Unified Commands.set
-    onCommit(Commands.set(
-        { nodes } as any,
-        nodeId, 
-        propKey, 
-        newState, 
-        oldState, 
-        `Change ${prop.name} Mode`
-    ));
+    onCommit(Commands.set({ nodes } as any, nodeId, propKey, newState, oldState, `Change ${prop.name} Mode`));
   };
 
   const handleLinkChange = (targetNodeId: string, targetPropId: string) => {
       const oldState = { mode: prop.mode, value: prop.value };
       const newVal = `${targetNodeId}:${targetPropId}`;
-      
       if (targetNodeId && targetPropId) {
           setLinkTargetNode(targetNodeId);
           setLinkTargetProp(targetPropId);
           onUpdate(nodeId, propKey, { value: newVal });
-          
-          onCommit(Commands.set(
-            { nodes } as any,
-            nodeId,
-            propKey,
-            { mode: 'link', value: newVal },
-            oldState,
-            `Link ${prop.name}`
-          ));
+          onCommit(Commands.set({ nodes } as any, nodeId, propKey, { mode: 'link', value: newVal }, oldState, `Link ${prop.name}`));
       }
   };
 
   useEffect(() => {
     let isCycle = false;
     if (prop.mode === 'link' && linkTargetNode && linkTargetProp) {
-        if (detectLinkCycle(nodes, nodeId, propKey, linkTargetNode, linkTargetProp)) {
-            isCycle = true;
-        }
+        if (detectLinkCycle(nodes, nodeId, propKey, linkTargetNode, linkTargetProp)) isCycle = true;
     } else if (prop.mode === 'code') {
         const regex = /ctx\.get\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)/g;
         let match;
@@ -278,7 +255,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
 
   useEffect(() => {
     if (autoFocusTrigger) {
-        if (prop.mode === 'code' && textareaRef.current) {
+        if ((prop.mode === 'code' || prop.type === 'object' || prop.type === 'array') && textareaRef.current) {
             textareaRef.current.focus();
         } else if (prop.mode === 'static' && inputRef.current) {
             inputRef.current.focus();
@@ -286,11 +263,24 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
     }
   }, [autoFocusTrigger, prop.mode]);
 
+  // Determine icon for the type
+  const getTypeIcon = () => {
+      switch(prop.type) {
+          case 'object': return <Braces size={12} />;
+          case 'array': return <List size={12} />;
+          case 'function': return <FunctionSquare size={12} />;
+          case 'string': return <span className="font-serif font-bold text-[10px]">Tx</span>;
+          case 'boolean': return <span className="font-mono font-bold text-[10px]">T/F</span>;
+          default: return <Hash size={12} />;
+      }
+  };
+
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-center group">
-        <label className="text-xs text-zinc-400 font-medium group-hover:text-zinc-200 transition-colors select-none">
+        <label className="text-xs text-zinc-400 font-medium group-hover:text-zinc-200 transition-colors select-none flex items-center gap-1.5">
           {prop.name}
+          <span className="text-zinc-600" title={prop.type}>{getTypeIcon()}</span>
         </label>
         <div className="flex bg-zinc-800 rounded p-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
           <button onClick={() => handleModeChange('static')} className={`p-1 rounded ${prop.mode === 'static' ? 'bg-zinc-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Static Value"><Hash size={12} /></button>
@@ -302,7 +292,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
 
       {prop.mode === 'static' && (
         <div className="mt-1">
-          {prop.type === 'number' && (
+          {(prop.type === 'number' || prop.type === 'string') && (
             <input 
               ref={inputRef}
               type="text" 
@@ -314,6 +304,22 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
               onBlur={handleBlur}
               onKeyDown={handleInputKeyDown}
             />
+          )}
+           {prop.type === 'boolean' && (
+               <div className="flex gap-2">
+                   <button 
+                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {value: true}); isEditingRef.current=true; performCommit(); }}
+                    className={`flex-1 py-1 text-xs rounded border ${prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'}`}
+                   >
+                       TRUE
+                   </button>
+                   <button 
+                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {value: false}); isEditingRef.current=true; performCommit(); }}
+                    className={`flex-1 py-1 text-xs rounded border ${!prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'}`}
+                   >
+                       FALSE
+                   </button>
+               </div>
           )}
           {prop.type === 'color' && (
              <div className="flex gap-2">
@@ -327,7 +333,6 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                         onClick={captureSnapshot} 
                         onFocus={handleFocus}
                         onBlur={handleBlur}
-                        onKeyDown={handleInputKeyDown}
                     />
                 </div>
                 <input 
@@ -343,18 +348,26 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                 />
              </div>
           )}
-          {prop.type === 'string' && (
-               <input 
-               ref={inputRef}
-               type="text" 
-               data-undoable="true"
-               className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
-               value={localValue}
-               onChange={handleChange}
-               onFocus={handleFocus}
-               onBlur={handleBlur}
-               onKeyDown={handleInputKeyDown}
-             />
+          {(prop.type === 'object' || prop.type === 'array') && (
+              <div className="relative">
+                <textarea 
+                    ref={textareaRef}
+                    data-undoable="true"
+                    className={`w-full bg-zinc-950 border rounded p-2 text-xs font-mono focus:outline-none resize-none leading-relaxed h-24 ${jsonError ? 'border-red-500 focus:border-red-500' : 'border-zinc-800 focus:border-blue-500'}`}
+                    value={localValue}
+                    onChange={handleChange}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
+                    onKeyDown={handleInputKeyDown}
+                    spellCheck={false}
+                />
+                {jsonError && <div className="absolute top-1 right-2 text-[10px] text-red-500 font-bold">{jsonError}</div>}
+              </div>
+          )}
+          {prop.type === 'function' && (
+              <div className="p-2 bg-zinc-900 border border-zinc-800 rounded text-zinc-500 text-xs italic text-center">
+                  Functions must be edited in Code Mode.
+              </div>
           )}
         </div>
       )}
@@ -371,15 +384,10 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                 data-undoable="true"
                 className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none"
                 value={linkTargetNode}
-                onChange={(e) => {
-                     setLinkTargetNode(e.target.value);
-                     setLinkTargetProp(""); 
-                }}
+                onChange={(e) => { setLinkTargetNode(e.target.value); setLinkTargetProp(""); }}
               >
                   <option value="">Select Node...</option>
-                  {Object.values(nodes).map((n: Node) => (
-                      <option key={n.id} value={n.id}>{n.id}</option>
-                  ))}
+                  {Object.values(nodes).map((n: Node) => <option key={n.id} value={n.id}>{n.id}</option>)}
               </select>
               <select 
                 data-undoable="true"
@@ -389,10 +397,9 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                 disabled={!linkTargetNode}
               >
                   <option value="">Select Property...</option>
-                  {linkTargetNode && nodes[linkTargetNode] && Object.entries(nodes[linkTargetNode].properties).map(([key, rawP]) => {
-                      const p = rawP as Property;
-                      return <option key={p.id} value={key}>{p.name}</option>;
-                  })}
+                  {linkTargetNode && nodes[linkTargetNode] && Object.entries(nodes[linkTargetNode].properties).map(([key, p]) => (
+                      <option key={p.id} value={key}>{p.name}</option>
+                  ))}
               </select>
               {cycleDetected && <div className="text-red-400 text-[10px] text-center font-bold">Cycle Detected</div>}
           </div>

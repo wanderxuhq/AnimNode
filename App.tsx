@@ -1,5 +1,3 @@
-
-
 import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { Timeline } from './components/Timeline';
 import { PropertyPanel } from './components/PropertyPanel';

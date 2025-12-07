@@ -1,5 +1,3 @@
-
-
 import React, { memo, useState, useEffect } from 'react';
 import { Node, Property, Command } from '../types';
 import { Terminal, Code2, MonitorPlay, Move, Layers, Pencil, Trash2, Variable } from 'lucide-react';

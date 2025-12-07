@@ -11,15 +11,32 @@ const uuid = () => {
   });
 };
 
-export const createProp = (name: string, type: any, value: any): Property => ({
-  id: uuid(),
-  name,
-  type,
-  mode: 'static',
-  value,
-  keyframes: [],
-  expression: type === 'string' ? `return "${value}";` : `return ${JSON.stringify(value)};`
-});
+export const createProp = (name: string, type: any, value: any): Property => {
+    let expression = `return ${JSON.stringify(value)};`;
+    
+    // Handle types that JSON.stringify breaks on or needs special handling
+    if (type === 'string') {
+        expression = `return "${value}";`;
+    } else if (type === 'function') {
+        expression = `return ${value.toString()};`;
+    } else if (type === 'object' || type === 'array') {
+        try {
+            expression = `return ${JSON.stringify(value, null, 2)};`;
+        } catch (e) {
+            expression = `return {}; // Error stringifying initial value`;
+        }
+    }
+
+    return {
+        id: uuid(),
+        name,
+        type,
+        mode: 'static',
+        value,
+        keyframes: [],
+        expression
+    };
+};
 
 export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: string): Node => {
   const nodeId = id || uuid();
