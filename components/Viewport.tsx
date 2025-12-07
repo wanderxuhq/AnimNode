@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect, useState } from 'react';
 import { ProjectState, Node, Command, Property } from '../types';
 import { renderSVG, evaluateProperty } from '../services/engine';
@@ -251,9 +250,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const rect = containerRef.current.getBoundingClientRect();
       const clientX = e.clientX - rect.left;
       const clientY = e.clientY - rect.top;
+      // Coordinate System: 0,0 is Top-Left. No offset.
       return {
-          x: clientX - rect.width / 2,
-          y: clientY - rect.height / 2
+          x: clientX,
+          y: clientY
       };
   };
 
@@ -414,13 +414,13 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               const endD = node.properties.d.value as string;
               
               if (startD !== endD) {
-                   // Use unified command
+                   // Use Unified Commands.set for Vector Edits
                    onCommit(Commands.set(
                        projectRef.current,
                        editingPathId,
                        'd',
-                       endD,
-                       startD,
+                       endD, // Current value as input
+                       startD, // Previous value
                        "Edit Path"
                    ));
               }
@@ -586,82 +586,82 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const ctx = createEvalContext(project);
       const t = project.meta.currentTime;
 
-      const x = evaluateProperty(node.properties.x, t, ctx) as number;
-      const y = evaluateProperty(node.properties.y, t, ctx) as number;
-      const rot = evaluateProperty(node.properties.rotation, t, ctx) as number;
-      const scale = evaluateProperty(node.properties.scale, t, ctx) as number;
+      // Pass debugInfo to ensure errors are logged in console if expressions fail
+      const x = evaluateProperty(node.properties.x, t, ctx, 0, { nodeId: selection, propKey: 'x' }) as number;
+      const y = evaluateProperty(node.properties.y, t, ctx, 0, { nodeId: selection, propKey: 'y' }) as number;
+      const rot = evaluateProperty(node.properties.rotation, t, ctx, 0, { nodeId: selection, propKey: 'rotation' }) as number;
+      const scale = evaluateProperty(node.properties.scale, t, ctx, 0, { nodeId: selection, propKey: 'scale' }) as number;
       
       let width = 100, height = 100;
       if (node.type === 'rect') {
-          width = evaluateProperty(node.properties.width, t, ctx) as number;
-          height = evaluateProperty(node.properties.height, t, ctx) as number;
+          width = evaluateProperty(node.properties.width, t, ctx, 0, { nodeId: selection, propKey: 'width' }) as number;
+          height = evaluateProperty(node.properties.height, t, ctx, 0, { nodeId: selection, propKey: 'height' }) as number;
       } else if (node.type === 'circle') {
-          const r = evaluateProperty(node.properties.radius, t, ctx) as number;
+          const r = evaluateProperty(node.properties.radius, t, ctx, 0, { nodeId: selection, propKey: 'radius' }) as number;
           width = r * 2; height = r * 2;
       }
 
       const transform = `translate(${x}, ${y}) rotate(${rot}) scale(${scale})`;
 
+      // Removed outer wrapping translate group because origin is now top-left
       return (
-          <g transform={`translate(${project.meta.width/2}, ${project.meta.height/2})`}>
-              <g transform={transform}>
-                  {/* Bounding Box Gizmo */}
-                  {showBoundingBox && (
-                    <>
-                        <rect x={-width/2} y={-height/2} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
-                        
-                        {/* Corners */}
-                        <rect x={-width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                        <rect x={width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                        <rect x={width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                        <rect x={-width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    </>
-                  )}
+          <g transform={transform}>
+              {/* Bounding Box Gizmo */}
+              {showBoundingBox && (
+                <>
+                    <rect x={-width/2} y={-height/2} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
+                    
+                    {/* Corners */}
+                    <rect x={-width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={-width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                </>
+              )}
 
-                  {/* PATH EDITOR OVERLAY */}
-                  {showPointEditor && (
-                      <g className="pen-editor-overlay">
-                          {/* Draw Control Lines */}
-                          {pathPoints.map((p, i) => (
-                              <g key={i}>
-                                  {(p.inX !== 0 || p.inY !== 0) && (
-                                      <line x1={p.x} y1={p.y} x2={p.x + p.inX} y2={p.y + p.inY} stroke="#3b82f6" strokeWidth={1/scale} />
-                                  )}
-                                  {(p.outX !== 0 || p.outY !== 0) && (
-                                      <line x1={p.x} y1={p.y} x2={p.x + p.outX} y2={p.y + p.outY} stroke="#3b82f6" strokeWidth={1/scale} />
-                                  )}
-                              </g>
-                          ))}
-                          
-                          {pathPoints.map((p, i) => {
-                             const isStart = i === 0;
-                             const showCloseHint = isStart && hoverStartPoint && pathPoints.length > 2;
+              {/* PATH EDITOR OVERLAY */}
+              {showPointEditor && (
+                  <g className="pen-editor-overlay">
+                      {/* Draw Control Lines */}
+                      {pathPoints.map((p, i) => (
+                          <g key={i}>
+                              {(p.inX !== 0 || p.inY !== 0) && (
+                                  <line x1={p.x} y1={p.y} x2={p.x + p.inX} y2={p.y + p.inY} stroke="#3b82f6" strokeWidth={1/scale} />
+                              )}
+                              {(p.outX !== 0 || p.outY !== 0) && (
+                                  <line x1={p.x} y1={p.y} x2={p.x + p.outX} y2={p.y + p.outY} stroke="#3b82f6" strokeWidth={1/scale} />
+                              )}
+                          </g>
+                      ))}
+                      
+                      {pathPoints.map((p, i) => {
+                          const isStart = i === 0;
+                          const showCloseHint = isStart && hoverStartPoint && pathPoints.length > 2;
 
-                             return (
-                              <g key={i}>
-                                  <circle 
-                                    cx={p.x} cy={p.y} 
-                                    r={showCloseHint ? (8/scale) : (4/scale)} 
-                                    fill={isStart && pathPoints.length > 0 ? "#10b981" : "white"} 
-                                    stroke="#3b82f6" 
-                                    strokeWidth={2/scale} 
-                                    style={{ transition: 'all 0.2s' }}
-                                  />
-                                  {showCloseHint && (
-                                     <circle cx={p.x} cy={p.y} r={12/scale} fill="none" stroke="#10b981" strokeWidth={2/scale} opacity={0.5} />
-                                  )}
-                                  
-                                  {(p.inX !== 0 || p.inY !== 0) && (
-                                      <circle cx={p.x + p.inX} cy={p.y + p.inY} r={3/scale} fill="#3b82f6" />
-                                  )}
-                                  {(p.outX !== 0 || p.outY !== 0) && (
-                                      <circle cx={p.x + p.outX} cy={p.y + p.outY} r={3/scale} fill="#3b82f6" />
-                                  )}
-                              </g>
-                          )})}
-                      </g>
-                  )}
-              </g>
+                          return (
+                          <g key={i}>
+                              <circle 
+                                cx={p.x} cy={p.y} 
+                                r={showCloseHint ? (8/scale) : (4/scale)} 
+                                fill={isStart && pathPoints.length > 0 ? "#10b981" : "white"} 
+                                stroke="#3b82f6" 
+                                strokeWidth={2/scale} 
+                                style={{ transition: 'all 0.2s' }}
+                              />
+                              {showCloseHint && (
+                                  <circle cx={p.x} cy={p.y} r={12/scale} fill="none" stroke="#10b981" strokeWidth={2/scale} opacity={0.5} />
+                              )}
+                              
+                              {(p.inX !== 0 || p.inY !== 0) && (
+                                  <circle cx={p.x + p.inX} cy={p.y + p.inY} r={3/scale} fill="#3b82f6" />
+                              )}
+                              {(p.outX !== 0 || p.outY !== 0) && (
+                                  <circle cx={p.x + p.outX} cy={p.y + p.outY} r={3/scale} fill="#3b82f6" />
+                              )}
+                          </g>
+                      )})}
+                  </g>
+              )}
           </g>
       );
   };

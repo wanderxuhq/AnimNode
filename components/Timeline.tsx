@@ -1,4 +1,3 @@
-
 import React, { useRef, useState } from 'react';
 import { ProjectState, Property } from '../types';
 import { Play, Pause, SkipBack, SkipForward, Music, Terminal } from 'lucide-react';
@@ -68,8 +67,8 @@ export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTog
                 </div>
             )}
             {project.rootNodeIds.map(id => (
-                <div key={id} className={`h-8 px-4 flex items-center text-xs border-b border-zinc-700/50 ${project.selection === id ? 'bg-blue-900/30 text-blue-200' : 'text-zinc-400'}`}>
-                    {project.nodes[id].name}
+                <div key={id} className={`h-8 px-4 flex items-center text-xs border-b border-zinc-700/50 font-mono ${project.selection === id ? 'bg-blue-900/30 text-blue-200' : 'text-zinc-400'}`}>
+                    {id}
                 </div>
             ))}
             </div>

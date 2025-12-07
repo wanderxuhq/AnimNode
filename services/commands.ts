@@ -1,4 +1,3 @@
-
 import { Command, ProjectState, Node, Property } from '../types';
 import { createNode } from './factory';
 
@@ -57,7 +56,7 @@ export const Commands = {
     const applyAdd = (p: ProjectState) => ({
         ...p,
         nodes: { ...p.nodes, [newNode.id]: newNode },
-        rootNodeIds: [...p.rootNodeIds, newNode.id], // Add to end (top)
+        rootNodeIds: [newNode.id, ...p.rootNodeIds],
         selection: newNode.id
     });
 
@@ -73,7 +72,7 @@ export const Commands = {
 
     const command: Command = {
         id: crypto.randomUUID(),
-        name: `New ${newNode.name}`,
+        name: `New ${newNode.id}`,
         timestamp: Date.now(),
         undo: applyRemove,
         redo: applyAdd
@@ -121,7 +120,7 @@ export const Commands = {
 
     return {
         id: crypto.randomUUID(),
-        name: `Delete ${node.name}`,
+        name: `Delete ${nodeId}`,
         timestamp: Date.now(),
         undo: performRestore,
         redo: performRemove
@@ -132,27 +131,31 @@ export const Commands = {
    * Rename a node and update all references to it
    */
   renameNode: (oldId: string, newId: string, project: ProjectState): Command | null => {
-    if (oldId === newId) return null;
-    if (!newId.trim()) return null;
-    if (project.nodes[newId]) return null; // ID collision
-    if (!project.nodes[oldId]) return null; // Old node missing
+    const fromId = oldId.trim();
+    const toId = newId.trim();
 
-    const performRename = (state: ProjectState, fromId: string, toId: string) => {
-        const node = state.nodes[fromId];
+    if (!fromId || !toId) return null;
+    if (fromId === toId) return null;
+    if (project.nodes[toId]) return null; // ID collision
+    
+    // Safety: check if node exists
+    if (!project.nodes[fromId] && !project.rootNodeIds.includes(fromId)) return null;
+
+    const performRename = (state: ProjectState, fId: string, tId: string) => {
+        const node = state.nodes[fId];
         if (!node) return state;
 
-        // Create new node with new ID and CLONED properties map to ensure separation
-        const newNode = { ...node, id: toId, properties: { ...node.properties } };
+        // Create new node with new ID
+        const newNode = { ...node, id: tId };
         
         // 1. Rebuild nodes map
         const newNodes: Record<string, Node> = {};
         Object.keys(state.nodes).forEach(key => {
-            if (key === fromId) newNodes[toId] = newNode;
+            if (key === fId) newNodes[tId] = newNode;
             else newNodes[key] = state.nodes[key];
         });
 
         // 2. Update references in other nodes (links/code)
-        // We iterate Object.values(newNodes) which includes our newly created node.
         Object.values(newNodes).forEach((n: Node) => {
             let propsUpdated = false;
             const newProps = { ...n.properties };
@@ -161,18 +164,18 @@ export const Commands = {
                 const prop = n.properties[pKey];
                 
                 // Fix Link References
-                if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.startsWith(fromId + ':')) {
+                if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.startsWith(fId + ':')) {
                     const [, suffix] = prop.value.split(':');
-                    newProps[pKey] = { ...prop, value: `${toId}:${suffix}` };
+                    newProps[pKey] = { ...prop, value: `${tId}:${suffix}` };
                     propsUpdated = true;
                 }
                 
                 // Fix Code References (Regex replace)
                 if (prop.mode === 'code') {
                     // Look for ctx.get('OLD_ID', ...)
-                    const regex = new RegExp(`ctx\\.get\\(['"]${fromId}['"]`, 'g');
+                    const regex = new RegExp(`ctx\\.get\\(['"]${fId}['"]`, 'g');
                     if (regex.test(prop.expression)) {
-                        newProps[pKey] = { ...prop, expression: prop.expression.replace(regex, `ctx.get('${toId}'`) };
+                        newProps[pKey] = { ...prop, expression: prop.expression.replace(regex, `ctx.get('${tId}'`) };
                         propsUpdated = true;
                     }
                 }
@@ -183,8 +186,8 @@ export const Commands = {
             }
         });
 
-        const newRoots = state.rootNodeIds.map(id => id === fromId ? toId : id);
-        const newSelection = state.selection === fromId ? toId : state.selection;
+        const newRoots = state.rootNodeIds.map(id => id === fId ? tId : id);
+        const newSelection = state.selection === fId ? tId : state.selection;
 
         return {
             ...state,
@@ -196,38 +199,10 @@ export const Commands = {
 
     return {
         id: crypto.randomUUID(),
-        name: `Rename ${oldId} -> ${newId}`,
+        name: `Rename ${fromId} -> ${toId}`,
         timestamp: Date.now(),
-        undo: (s) => performRename(s, newId, oldId), // Inverse
-        redo: (s) => performRename(s, oldId, newId)
-    };
-  },
-
-  /**
-   * Update Metadata (e.g. Name)
-   */
-  updateNodeMeta: (nodeId: string, updates: { name?: string }, description?: string): Command => {
-    const apply = (s: ProjectState, newMeta: { name?: string }) => {
-        const n = s.nodes[nodeId];
-        if (!n) return s;
-        return {
-            ...s,
-            nodes: {
-                ...s.nodes,
-                [nodeId]: { ...n, ...newMeta }
-            }
-        };
-    };
-
-    return {
-        id: crypto.randomUUID(),
-        name: description || `Update Node Meta`,
-        timestamp: Date.now(),
-        undo: (s) => {
-             // Limited undo support for meta updates without passing prev state explicitly
-             return s; 
-        },
-        redo: (s) => apply(s, updates)
+        undo: (s) => performRename(s, toId, fromId), // Inverse
+        redo: (s) => performRename(s, fromId, toId)
     };
   },
 
@@ -252,29 +227,36 @@ export const Commands = {
   },
 
   /**
-   * Clear all nodes from the project
+   * Update Node Metadata
    */
-  clearProject: (project: ProjectState): Command => {
-    const oldNodes = { ...project.nodes };
-    const oldRoots = [...project.rootNodeIds];
-    const oldSelection = project.selection;
+  updateNodeMeta: (nodeId: string, meta: Partial<Node>, project: ProjectState): Command => {
+    const node = project.nodes[nodeId];
+    if (!node) throw new Error(`Node ${nodeId} not found`);
+    
+    const oldMeta: Partial<Node> = {};
+    (Object.keys(meta) as Array<keyof Node>).forEach(key => {
+        // @ts-ignore
+        oldMeta[key] = node[key];
+    });
+
+    const apply = (s: ProjectState, updates: Partial<Node>) => {
+        const n = s.nodes[nodeId];
+        if (!n) return s;
+        return {
+            ...s,
+            nodes: {
+                ...s.nodes,
+                [nodeId]: { ...n, ...updates }
+            }
+        };
+    };
 
     return {
         id: crypto.randomUUID(),
-        name: 'Clear Project',
+        name: `Update ${nodeId}`,
         timestamp: Date.now(),
-        undo: (s) => ({
-            ...s,
-            nodes: oldNodes,
-            rootNodeIds: oldRoots,
-            selection: oldSelection
-        }),
-        redo: (s) => ({
-            ...s,
-            nodes: {},
-            rootNodeIds: [],
-            selection: null
-        })
+        undo: (s) => apply(s, oldMeta),
+        redo: (s) => apply(s, meta)
     };
   },
 
@@ -298,41 +280,39 @@ export const Commands = {
       if (!prop) throw new Error(`Property ${propKey} not found on node ${nodeId}`);
 
       // --- Helper to resolve a raw input to a Property Partial ---
-      const resolveState = (val: any, targetProp: Property): Partial<Property> => {
+      const resolveState = (val: any): Partial<Property> => {
           if (typeof val === 'function') {
               return { mode: 'code', expression: extractBody(val) };
           }
           if (val && typeof val === 'object' && 'mode' in val) {
               return val;
           }
-          
-          // Handle Static Values
-          // Coerce number strings to numbers if property type requires it
-          let safeVal = val;
-          if (targetProp.type === 'number' && typeof val === 'string') {
-              const parsed = parseFloat(val);
-              if (!isNaN(parsed)) safeVal = parsed;
-          }
-
-          // Ensure expression is synced for consistency
-          const expr = typeof safeVal === 'string' 
-            ? `return "${safeVal}";` 
-            : `return ${JSON.stringify(safeVal)};`;
-
-          return { mode: 'static', value: safeVal, expression: expr };
+          return { mode: 'static', value: val };
       };
 
-      const newState = resolveState(input, prop);
+      const newState = resolveState(input);
       
       let oldState: Partial<Property>;
       if (prevInput !== undefined) {
-          oldState = resolveState(prevInput, prop);
+          oldState = resolveState(prevInput);
       } else {
           oldState = {
             mode: prop.mode,
             value: prop.value,
             expression: prop.expression
           };
+      }
+      
+      // Auto-sync expression for static values
+      if (newState.mode === 'static' && newState.value !== undefined) {
+          const serialized = typeof newState.value === 'string' ? `"${newState.value}"` : JSON.stringify(newState.value);
+          newState.expression = `return ${serialized};`;
+      }
+      
+      // Type Coercion for numbers
+      if (newState.mode === 'static' && prop.type === 'number' && newState.value !== undefined) {
+          const num = parseFloat(String(newState.value));
+          if (!isNaN(num)) newState.value = num;
       }
 
       const cmdName = description || `Set ${prop.name}`;
@@ -401,28 +381,54 @@ export const Commands = {
   },
 
   /**
-   * Batch multiple commands into a single transaction
+   * Batch multiple commands into one
    */
-  batch: (commands: Command[], name: string = 'Batch Action'): Command => {
+  batch: (commands: Command[], name: string): Command => {
+    return {
+        id: crypto.randomUUID(),
+        name,
+        timestamp: Date.now(),
+        undo: (state) => {
+            let s = state;
+            for (let i = commands.length - 1; i >= 0; i--) {
+                s = commands[i].undo(s);
+            }
+            return s;
+        },
+        redo: (state) => {
+            let s = state;
+            for (const cmd of commands) {
+                s = cmd.redo(s);
+            }
+            return s;
+        }
+    };
+  },
+
+  /**
+   * Clear entire project
+   */
+  clearProject: (project: ProjectState): Command => {
+      const oldNodes = project.nodes;
+      const oldRoots = project.rootNodeIds;
+      const oldSelection = project.selection;
+
       return {
           id: crypto.randomUUID(),
-          name,
+          name: 'Clear Project',
           timestamp: Date.now(),
-          undo: (s) => {
-              let state = s;
-              // Reverse undo order
-              for (let i = commands.length - 1; i >= 0; i--) {
-                  state = commands[i].undo(state);
-              }
-              return state;
-          },
-          redo: (s) => {
-              let state = s;
-              for (const cmd of commands) {
-                  state = cmd.redo(state);
-              }
-              return state;
-          }
+          undo: (s) => ({
+              ...s,
+              nodes: oldNodes,
+              rootNodeIds: oldRoots,
+              selection: oldSelection
+          }),
+          redo: (s) => ({
+              ...s,
+              nodes: {},
+              rootNodeIds: [],
+              selection: null
+          })
       };
   }
 };

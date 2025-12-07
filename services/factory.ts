@@ -1,5 +1,3 @@
-
-
 import { Node, Property } from '../types';
 
 // Safe UUID generator
@@ -26,9 +24,10 @@ export const createProp = (name: string, type: any, value: any): Property => ({
 export const createNode = (type: 'rect' | 'circle' | 'vector', id?: string): Node => {
   const nodeId = id || uuid();
   
+  // Default to screen center (400, 300) so new nodes are visible
   const baseProps = {
-      x: { ...createProp('X Position', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
-      y: { ...createProp('Y Position', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
+      x: { ...createProp('X Position', 'number', 400), mode: 'static' as const, expression: 'return 400;' },
+      y: { ...createProp('Y Position', 'number', 300), mode: 'static' as const, expression: 'return 300;' },
       rotation: { ...createProp('Rotation', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
       scale: { ...createProp('Scale', 'number', 1), mode: 'static' as const, expression: 'return 1;' },
       opacity: { ...createProp('Opacity', 'number', 1), mode: 'static' as const, expression: 'return 1;' },
@@ -37,7 +36,6 @@ export const createNode = (type: 'rect' | 'circle' | 'vector', id?: string): Nod
   if (type === 'rect') {
     return {
       id: nodeId,
-      name: 'New Rectangle',
       type,
       parentId: null,
       properties: {
@@ -52,7 +50,6 @@ export const createNode = (type: 'rect' | 'circle' | 'vector', id?: string): Nod
   if (type === 'circle') {
     return {
       id: nodeId,
-      name: 'New Circle',
       type,
       parentId: null,
       properties: {
@@ -66,7 +63,6 @@ export const createNode = (type: 'rect' | 'circle' | 'vector', id?: string): Nod
   if (type === 'vector') {
     return {
       id: nodeId,
-      name: 'New Path',
       type,
       parentId: null,
       properties: {

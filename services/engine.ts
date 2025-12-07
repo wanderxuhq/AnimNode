@@ -1,5 +1,3 @@
-
-
 import { Node, ProjectState, Property } from '../types';
 import { consoleService } from './console';
 import React from 'react';
@@ -356,8 +354,7 @@ export function renderSVG(project: ProjectState, audioData?: any) {
       xmlns: "http://www.w3.org/2000/svg",
       style: { background: '#18181b' }
     },
-    React.createElement('g', {
-      transform: `translate(${width / 2}, ${height / 2})`
-    }, children)
+    // No transform grouping implies 0,0 is top-left
+    children
   );
 }

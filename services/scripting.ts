@@ -1,5 +1,3 @@
-
-
 import { ProjectState, Command } from '../types';
 import { Commands } from './commands';
 
@@ -20,15 +18,18 @@ export const createScriptContext = (
     const proxyCache = new Map<string, any>();
 
     const getProxy = (initialId: string) => {
+        // Since we are creating a context, we can scope variables to manage ID reuse.
+        // However, the proxy needs to track if its underlying node ID changed.
+        
+        // Check cache with current valid ID
+        // Note: The caller (createScriptContext body) handles variable assignment.
+        // But if 'sun' is created, 'sun' variable holds the proxy.
         if (proxyCache.has(initialId)) return proxyCache.get(initialId);
         
         // Mutable reference ID
-        // If the node is renamed via this proxy (or externally if we had a way to track that),
-        // this allows the proxy to keep pointing to the correct object.
         let currentRefId = initialId;
         
         // Track the key this proxy is currently stored under in the cache
-        // So we can remove it if the ID changes
         let currentCacheKey = initialId;
 
         const proxy = new Proxy({}, {
@@ -37,7 +38,11 @@ export const createScriptContext = (
                 const node = project.nodes[currentRefId];
                 
                 // If node is gone (deleted), return undefined
-                if (!node) return undefined;
+                // But log a warning if accessed? No, let standard JS undefined behavior handle it unless strictly needed.
+                if (!node) {
+                     // Optionally log: log('warn', [`Accessing deleted node ${currentRefId}`]);
+                     return undefined;
+                }
                 
                 // Allow direct reading of current values
                 if (prop in node.properties) {
@@ -46,7 +51,6 @@ export const createScriptContext = (
                 
                 // Metadata access
                 if (prop === 'id') return node.id;
-                if (prop === 'name') return node.name;
                 if (prop === 'type') return node.type;
                 
                 return undefined;
@@ -62,8 +66,9 @@ export const createScriptContext = (
 
                 // 1. Handle ID Change (Rename)
                 if (prop === 'id') {
-                    const newId = String(value);
+                    const newId = String(value).trim();
                     if (newId === currentRefId) return true;
+                    if (!newId) return false;
                     
                     if (project.nodes[newId]) {
                          log('warn', [`Cannot rename '${currentRefId}' to '${newId}': ID already exists.`]);
@@ -77,11 +82,10 @@ export const createScriptContext = (
                             log('info', [`Renamed ${currentRefId} to ID: ${newId}`]);
                             
                             // CRITICAL FIX: Update Cache Mapping
-                            // 1. Remove the old key (e.g. 'circle_0') so it can be reused by new nodes
+                            // 1. Remove the old key so it can be reused by new nodes
                             proxyCache.delete(currentCacheKey);
                             
-                            // 2. Add the new key (e.g. 'sun') pointing to this same proxy
-                            // This ensures if someone asks for 'sun', they get this object
+                            // 2. Add the new key pointing to this same proxy
                             proxyCache.set(newId, proxy);
                             
                             // 3. Update internal state
@@ -98,22 +102,9 @@ export const createScriptContext = (
                     }
                 }
 
-                // 2. Handle Name Change (Display Name)
-                if (prop === 'name') {
-                    try {
-                        const newName = String(value);
-                        const cmd = Commands.updateNodeMeta(currentRefId, { name: newName });
-                        commit(cmd);
-                        return true;
-                    } catch (e: any) {
-                        log('error', [`Error setting name: ${e.message}`]);
-                        return false;
-                    }
-                }
-
-                // 3. Handle Property Set
+                // 2. Handle Property Set
                 if (!node.properties[prop]) {
-                    log('warn', [`Property '${prop}' does not exist on node '${node.name}' (${node.type})`]);
+                    log('warn', [`Property '${prop}' does not exist on node '${currentRefId}' (${node.type})`]);
                     return false;
                 }
 
@@ -122,6 +113,7 @@ export const createScriptContext = (
                     // Commands.set handles static values vs functions automatically
                     const cmd = Commands.set(project, currentRefId, prop, value, undefined, `Script: Set ${prop}`);
                     commit(cmd);
+                    // log('info', [`Set ${currentRefId}.${prop}`]); 
                     return true;
                 } catch (e: any) {
                     log('error', [`Error setting ${currentRefId}.${prop}: ${e.message}`]);
@@ -132,6 +124,19 @@ export const createScriptContext = (
         
         proxyCache.set(initialId, proxy);
         return proxy;
+    };
+    
+    // Provide a way to clear cache if needed, though 'clear()' command rebuilds state usually.
+    // Ideally clear() in script should wipe this cache too, but since createScriptContext is called PER execution,
+    // the cache is local to the run.
+    
+    // However, if we run a script that clears the project, the proxies in the cache are now pointing to deleted nodes.
+    // If the script adds new nodes with same IDs, we must ensure we get fresh proxies?
+    // Actually, 'addNode' implementation below handles this by calling getProxy.
+    // If 'circle_0' was deleted, and added again, 'getProxy' will return the OLD proxy if we don't clear it.
+    
+    const uncacheProxy = (id: string) => {
+        proxyCache.delete(id);
     };
 
     // Build the Global Context Object
@@ -168,11 +173,13 @@ export const createScriptContext = (
     context.removeNode = (id: string) => {
         const cmd = Commands.removeNode(id, projectGetter());
         commit(cmd);
+        uncacheProxy(id);
     };
 
     context.clear = () => {
         const cmd = Commands.clearProject(projectGetter());
         commit(cmd);
+        proxyCache.clear(); // Reset proxy cache entirely
         log('info', ['Project cleared']);
     };
 

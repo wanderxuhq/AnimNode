@@ -1,4 +1,3 @@
-
 import React, { useRef, useState, useEffect } from 'react';
 import { Timeline } from './components/Timeline';
 import { PropertyPanel } from './components/PropertyPanel';
@@ -346,9 +345,7 @@ export default function App() {
                                  project.nodes[id].type === 'circle' ? <Circle size={12}/> :
                                  <Layout size={12} className="text-emerald-500"/>}
                                 
-                                <span className="truncate flex-1">{project.nodes[id].name}</span>
-                                {/* Display ID in list */}
-                                <span className="text-[10px] text-zinc-600 font-mono shrink-0 opacity-50">{id}</span>
+                                <span className="truncate flex-1 font-mono text-xs">{id}</span>
                             </div>
                         );
                     })}

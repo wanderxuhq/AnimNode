@@ -9,16 +9,22 @@
 *   **沙箱**: 脚本运行在受限环境中，无 `window` / `document` 访问权限。
 *   **入口**: 脚本按顺序执行，立即生效。
 
+## 2. 坐标系 (Coordinate System)
+
+*   **原点 (Origin)**: `(0, 0)` 位于画布的 **左上角**。
+*   **方向**: X 轴向右为正，Y 轴向下为正。
+*   **默认位置**: 使用 `addNode` 创建的新节点默认位于画布中心 (通常是 `400, 300`)。
+
 ---
 
-## 2. 全局函数与变量 (Global Context)
+## 3. 全局函数与变量 (Global Context)
 
 在脚本的顶层作用域可直接访问以下对象：
 
 ### 核心函数
 | 函数签名 | 返回值 | 描述 |
 | :--- | :--- | :--- |
-| `addNode(type: string)` | `NodeProxy` | 创建新节点。`type` 可选值: `'rect'`, `'circle'`, `'vector'`。 |
+| `addNode(type: string)` | `NodeProxy` | 创建新节点。`type` 可选值: `'rect'`, `'circle'`, `'vector'`。默认位置为屏幕中心。 |
 | `removeNode(id: string)` | `void` | 删除指定 ID 的节点。 |
 | `clear()` | `void` | **重要**: 清空当前画布上的所有节点。建议在生成式脚本开头调用。 |
 | `log(...args)` | `void` | 输出信息到控制台。 |
@@ -32,7 +38,7 @@
 
 ---
 
-## 3. 节点对象 (Node Proxy)
+## 4. 节点对象 (Node Proxy)
 
 `addNode` 返回的对象或通过 ID 访问的全局对象。
 
@@ -40,7 +46,6 @@
 | 属性 | 类型 | 读/写 | 描述 |
 | :--- | :--- | :--- | :--- |
 | `.id` | `string` | RW | 节点的唯一标识符。修改此属性会重命名节点。**必须唯一**。 |
-| `.name` | `string` | RW | 在 UI 图层面板中显示的名称。 |
 | `.type` | `string` | Read | 节点类型 (`rect`, `circle`, `vector`)。 |
 
 ### 视觉属性 (Visual Properties)
@@ -48,8 +53,8 @@
 
 | 属性名 | 类型 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- |
-| `x` | `number` | 0 | X 轴位置 (中心点)。 |
-| `y` | `number` | 0 | Y 轴位置 (中心点)。 |
+| `x` | `number` | 400 | X 轴位置 (单位: px)。原点在左上角。 |
+| `y` | `number` | 300 | Y 轴位置 (单位: px)。原点在左上角，向下为正。 |
 | `rotation` | `number` | 0 | 旋转角度 (度)。 |
 | `scale` | `number` | 1 | 缩放比例。 |
 | `opacity` | `number` | 1 | 不透明度 (0-1)。 |
@@ -77,14 +82,14 @@
 
 ---
 
-## 4. 赋值语法规则 (Assignment Rules)
+## 5. 赋值语法规则 (Assignment Rules)
 
 AnimNode 支持两种属性赋值模式。AI 应根据需求选择模式。
 
 ### 模式 A: 静态赋值 (Static Assignment)
 设置一个固定的常数值。
 ```javascript
-node.x = 100;
+node.x = 100; // 绝对位置，距离左边 100px
 node.fill = "#ff0000";
 node.id = "myNode";
 ```
@@ -95,7 +100,8 @@ node.id = "myNode";
 
 ```javascript
 // 正确写法
-node.x = () => Math.sin(t) * 100;
+// 让 x 在 300 到 500 之间往复运动 (中心 400)
+node.x = () => 400 + Math.sin(t) * 100;
 
 // 错误写法 (这只是赋值了计算结果的静态值)
 node.x = Math.sin(t) * 100; 
@@ -110,7 +116,7 @@ node.x = Math.sin(t) * 100;
 
 ---
 
-## 5. 上下文工具 (Context API)
+## 6. 上下文工具 (Context API)
 
 在表达式内部用于获取外部数据。
 
@@ -136,7 +142,7 @@ node.scale = () => 1 + ctx.audio.bass * 2;
 
 ---
 
-## 6. 代码生成示例 (Examples)
+## 7. 代码生成示例 (Examples)
 
 ### 场景初始化模板
 ```javascript
@@ -144,6 +150,8 @@ clear(); // 1. 清理
 const bg = addNode('rect'); // 2. 创建
 bg.width = 800;
 bg.height = 600;
+bg.x = 400; // 居中 (800/2)
+bg.y = 300; // 居中 (600/2)
 bg.fill = "#111";
 ```
 
@@ -155,8 +163,9 @@ ball.fill = () => {
     if (Math.sin(t) > 0) return "#ff0000";
     return "#0000ff";
 };
-// 复杂运动轨迹
-ball.x = () => Math.sin(t) * 100 + Math.cos(t * 3) * 20;
+// 复杂运动轨迹 (围绕中心 400,300)
+ball.x = () => 400 + Math.sin(t) * 100;
+ball.y = () => 300 + Math.cos(t * 3) * 20;
 ```
 
 ### 批量生成 (Grid System)
@@ -165,15 +174,16 @@ clear();
 const count = 5;
 for(let i=0; i<count; i++) {
     const n = addNode('rect');
-    n.x = (i - count/2) * 50;
+    // 基于中心点偏移
+    n.x = 400 + (i - count/2) * 60;
     // 每个节点有独立的相位偏移
-    n.y = () => Math.sin(t + i) * 50; 
+    n.y = () => 300 + Math.sin(t + i) * 50; 
 }
 ```
 
 ---
 
-## 7. 安全沙箱与限制 (Sandbox & Limitations)
+## 8. 安全沙箱与限制 (Sandbox & Limitations)
 
 为了保证动画渲染的确定性和安全性，脚本和表达式运行在隔离的沙箱中。
 

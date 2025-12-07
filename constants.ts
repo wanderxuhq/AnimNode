@@ -1,5 +1,3 @@
-
-
 import { ProjectState, Node } from './types';
 
 export const CANVAS_WIDTH = 800;
@@ -54,12 +52,11 @@ export const INITIAL_PROJECT: ProjectState = {
   nodes: {
     [demoRectId]: {
       id: demoRectId,
-      name: 'Audio Reactive Cube',
       type: 'rect',
       parentId: null,
       properties: {
-        x: { ...createProp('X Position', 'number', 0), mode: 'code', expression: 'return Math.sin(t * 2) * 200;' },
-        y: { ...createProp('Y Position', 'number', 0), mode: 'static', expression: 'return 0;' },
+        x: { ...createProp('X Position', 'number', 400), mode: 'code', expression: 'return 400 + Math.sin(t * 2) * 200;' },
+        y: { ...createProp('Y Position', 'number', 300), mode: 'static', expression: 'return 300;' },
         width: createProp('Width', 'number', 100),
         height: { ...createProp('Height', 'number', 100), mode: 'code', expression: '// Scales with Bass\nreturn 100 + (ctx.audio.bass || 0) * 100;' },
         rotation: { ...createProp('Rotation', 'number', 0), mode: 'code', expression: 'return t * 45;' },
@@ -69,12 +66,11 @@ export const INITIAL_PROJECT: ProjectState = {
     },
     [demoCircleId]: {
       id: demoCircleId,
-      name: 'Orbiting Circle',
       type: 'circle',
       parentId: null,
       properties: {
-        x: { ...createProp('X Position', 'number', 200), mode: 'code', expression: 'return Math.cos(t * 3) * 150;' },
-        y: { ...createProp('Y Position', 'number', 0), mode: 'code', expression: 'return Math.sin(t * 3) * 150;' },
+        x: { ...createProp('X Position', 'number', 600), mode: 'code', expression: 'return 400 + Math.cos(t * 3) * 150;' },
+        y: { ...createProp('Y Position', 'number', 300), mode: 'code', expression: 'return 300 + Math.sin(t * 3) * 150;' },
         rotation: createProp('Rotation', 'number', 0),
         scale: createProp('Scale', 'number', 1),
         radius: { ...createProp('Radius', 'number', 20), mode: 'keyframe', keyframes: [

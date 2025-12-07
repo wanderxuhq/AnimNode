@@ -1,4 +1,3 @@
-
 import { ProjectState } from '../types';
 
 // --- WebGPU Type Shims ---
@@ -65,16 +64,18 @@ fn vs_main(input : VertexInput) -> VertexOutput {
   let centered = input.position - vec2<f32>(0.5, 0.5);
   
   // Scale -> Rotate -> Translate
+  // posWorld is in "Canvas Pixels"
   let posWorld = (rotMat * (centered * input.instanceSize)) + input.instancePos;
   
   // Project to Clip Space
-  // Canvas: (0,0) is center. Y is down? 
-  // Let's assume standard cartesian: Y is UP in WebGPU clip space.
-  // We need to map World Y (Down+) to Clip Y (Up+).
+  // Canvas Coords: (0,0) Top-Left, (W,H) Bottom-Right
+  // WebGPU Clip Space: (-1,1) Top-Left, (1,-1) Bottom-Right (Standard normalized Y-up)
   
-  let clipX = posWorld.x / (uniforms.resolution.x / 2.0);
-  // Invert Y because WebGPU Clip Y+ is UP, but our World Y+ (Canvas style) is usually DOWN.
-  let clipY = -(posWorld.y / (uniforms.resolution.y / 2.0)); 
+  // Map X [0..W] -> [-1..1]
+  let clipX = (posWorld.x / uniforms.resolution.x) * 2.0 - 1.0;
+  
+  // Map Y [0..H] -> [1..-1] (Inverted)
+  let clipY = 1.0 - (posWorld.y / uniforms.resolution.y) * 2.0;
 
   var output : VertexOutput;
   output.Position = vec4<f32>(clipX, clipY, 0.0, 1.0);

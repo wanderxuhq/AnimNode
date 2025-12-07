@@ -1,4 +1,3 @@
-
 import { ProjectState } from '../types';
 import { evaluateProperty } from './engine';
 import { audioController } from './audio';
@@ -57,11 +56,10 @@ export const generateSVGString = (project: ProjectState): string => {
   });
 
   // 3. Construct Final SVG with explicit transparent background style
+  // Removed translate transform to match top-left origin
   return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="background-color: transparent;" xmlns="http://www.w3.org/2000/svg">
-    <g transform="translate(${width / 2}, ${height / 2})">
-        ${elements}
-    </g>
+    ${elements}
 </svg>`;
 };
 

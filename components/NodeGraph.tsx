@@ -1,4 +1,3 @@
-
 import React, { useRef, useState, useEffect } from 'react';
 import { ProjectState, Property } from '../types';
 import { Code2 } from 'lucide-react';
@@ -108,9 +107,9 @@ export const NodeGraph: React.FC<NodeGraphProps> = ({ project, onSelect }) => {
             >
                 {/* Header */}
                 <div className={`h-9 px-3 rounded-t-lg flex items-center justify-between ${isSelected ? 'bg-indigo-900/30' : 'bg-zinc-800'} border-b border-zinc-700`}>
-                    <span className="font-bold text-xs text-zinc-200 truncate flex items-center gap-2">
+                    <span className="font-bold text-xs text-zinc-200 truncate flex items-center gap-2 font-mono">
                         {node.type === 'rect' ? <div className="w-2 h-2 bg-blue-500 rounded-sm"/> : <div className="w-2 h-2 bg-pink-500 rounded-full"/>}
-                        {node.name}
+                        {node.id}
                     </span>
                     <button 
                         className="p-1.5 hover:bg-white/10 rounded text-zinc-400 hover:text-white transition-colors"

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Property, Node, Command } from '../types';
 import { Code, Key, Hash, Link as LinkIcon, AlertTriangle } from 'lucide-react';
@@ -379,7 +378,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
               >
                   <option value="">Select Node...</option>
                   {Object.values(nodes).map((n: Node) => (
-                      <option key={n.id} value={n.id}>{n.name}</option>
+                      <option key={n.id} value={n.id}>{n.id}</option>
                   ))}
               </select>
               <select 
