@@ -43,6 +43,22 @@ function transformPointToLocal(
     return { x: rx / scale, y: ry / scale };
 }
 
+// Helper: Create Evaluation Context
+// Ensures interactions and gizmos can resolve linked properties (ctx.get)
+const createEvalContext = (project: ProjectState) => {
+    const audioData = audioController.getAudioData();
+    const ctx: any = { 
+        audio: audioData || {},
+        get: (nodeId: string, propKey: string, depth: number = 0) => {
+            const node = project.nodes[nodeId];
+            if (!node) return 0;
+            const prop = node.properties[propKey];
+            return evaluateProperty(prop, project.meta.currentTime, ctx, depth, { nodeId, propKey });
+        }
+    };
+    return ctx;
+};
+
 export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpdate, onCommit, selection, onAddNode }) => {
   // Separate refs for different contexts to avoid getContext conflicts
   const canvasWebGpuRef = useRef<HTMLCanvasElement>(null);
@@ -243,11 +259,12 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
   const hitTestPathPoints = (wx: number, wy: number, node: Node, points: PathPoint[]) => {
       const project = projectRef.current;
-      const dummyCtx = { audio: {}, get: () => 0 }; 
-      const nx = evaluateProperty(node.properties.x, project.meta.currentTime, dummyCtx) as number;
-      const ny = evaluateProperty(node.properties.y, project.meta.currentTime, dummyCtx) as number;
-      const rot = evaluateProperty(node.properties.rotation, project.meta.currentTime, dummyCtx) as number;
-      const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, dummyCtx) as number;
+      const ctx = createEvalContext(project);
+      
+      const nx = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
+      const ny = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
+      const rot = evaluateProperty(node.properties.rotation, project.meta.currentTime, ctx) as number;
+      const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, ctx) as number;
 
       const lx = transformPointToLocal(wx, wy, nx, ny, rot, scale).x;
       const ly = transformPointToLocal(wx, wy, nx, ny, rot, scale).y;
@@ -340,14 +357,14 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
   const handlePointDragMove = (e: React.MouseEvent, wx: number, wy: number) => {
       const project = projectRef.current;
-      
+      const ctx = createEvalContext(project);
+
       if (editingPathId && pathPoints.length > 2 && dragPointIndex === null) {
           const node = project.nodes[editingPathId];
           if(node) {
              const { lx, ly } = hitTestPathPoints(wx, wy, node, []); 
              const startP = pathPoints[0];
-             const dummyCtx = { audio: {}, get: () => 0 }; 
-             const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, dummyCtx) as number;
+             const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, ctx) as number;
              const HIT_RADIUS = 12 / scale;
              const dist = Math.hypot(startP.x - lx, startP.y - ly);
              setHoverStartPoint(dist < HIT_RADIUS);
@@ -426,7 +443,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
       // SELECT TOOL LOGIC
       const project = projectRef.current;
-      const dummyCtx = { audio: {}, get: () => 0 }; 
+      const ctx = createEvalContext(project);
       
       if (selection && project.nodes[selection]?.type === 'vector') {
           const node = project.nodes[selection];
@@ -447,24 +464,24 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
       for (const id of nodes) {
           const node = project.nodes[id];
-          const nx = evaluateProperty(node.properties.x, project.meta.currentTime, dummyCtx) as number;
-          const ny = evaluateProperty(node.properties.y, project.meta.currentTime, dummyCtx) as number;
-          const rot = evaluateProperty(node.properties.rotation, project.meta.currentTime, dummyCtx) as number;
-          const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, dummyCtx) as number;
+          const nx = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
+          const ny = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
+          const rot = evaluateProperty(node.properties.rotation, project.meta.currentTime, ctx) as number;
+          const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, ctx) as number;
           
           const local = transformPointToLocal(wx, wy, nx, ny, rot, scale);
           let isHit = false;
 
           if (node.type === 'rect') {
-              const w = evaluateProperty(node.properties.width, project.meta.currentTime, dummyCtx) as number;
-              const h = evaluateProperty(node.properties.height, project.meta.currentTime, dummyCtx) as number;
+              const w = evaluateProperty(node.properties.width, project.meta.currentTime, ctx) as number;
+              const h = evaluateProperty(node.properties.height, project.meta.currentTime, ctx) as number;
               if (local.x >= -w/2 && local.x <= w/2 && local.y >= -h/2 && local.y <= h/2) isHit = true;
           } else if (node.type === 'circle') {
-              const r = evaluateProperty(node.properties.radius, project.meta.currentTime, dummyCtx) as number;
+              const r = evaluateProperty(node.properties.radius, project.meta.currentTime, ctx) as number;
               const dist = Math.sqrt(local.x*local.x + local.y*local.y);
               if (dist <= r) isHit = true;
           } else if (node.type === 'vector') {
-              const d = evaluateProperty(node.properties.d, project.meta.currentTime, dummyCtx) as string;
+              const d = evaluateProperty(node.properties.d, project.meta.currentTime, ctx) as string;
               const { points } = svgPathToPoints(d);
               if (points.length === 0) {
                    if (Math.abs(local.x) < 20 && Math.abs(local.y) < 20) isHit = true;
@@ -495,8 +512,8 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           setIsDragging(true);
           // Snapshot for History
           const n = project.nodes[hitId];
-          const sx = evaluateProperty(n.properties.x, project.meta.currentTime, dummyCtx) as number;
-          const sy = evaluateProperty(n.properties.y, project.meta.currentTime, dummyCtx) as number;
+          const sx = evaluateProperty(n.properties.x, project.meta.currentTime, ctx) as number;
+          const sy = evaluateProperty(n.properties.y, project.meta.currentTime, ctx) as number;
           setDragStartSnapshot({ id: hitId, x: sx, y: sy });
       } else {
           onSelect(null);
@@ -535,9 +552,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       if (isDragging && dragStartSnapshot && selection) {
           const project = projectRef.current;
           const node = project.nodes[selection];
-          const dummyCtx = { audio: {}, get: () => 0 }; 
-          const currentX = evaluateProperty(node.properties.x, project.meta.currentTime, dummyCtx) as number;
-          const currentY = evaluateProperty(node.properties.y, project.meta.currentTime, dummyCtx) as number;
+          const ctx = createEvalContext(project);
+
+          const currentX = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
+          const currentY = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
 
           // Commit if moved
           if (Math.abs(currentX - dragStartSnapshot.x) > 0.1 || Math.abs(currentY - dragStartSnapshot.y) > 0.1) {
@@ -564,20 +582,21 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const showPointEditor = project.meta.activeTool === 'pen' || isVector;
       const showBoundingBox = !isVector; 
 
-      const dummyCtx = { audio: {}, get: () => 0 }; 
+      // Use a REAL context so linked properties (ctx.get) work for gizmos too
+      const ctx = createEvalContext(project);
       const t = project.meta.currentTime;
 
-      const x = evaluateProperty(node.properties.x, t, dummyCtx) as number;
-      const y = evaluateProperty(node.properties.y, t, dummyCtx) as number;
-      const rot = evaluateProperty(node.properties.rotation, t, dummyCtx) as number;
-      const scale = evaluateProperty(node.properties.scale, t, dummyCtx) as number;
+      const x = evaluateProperty(node.properties.x, t, ctx) as number;
+      const y = evaluateProperty(node.properties.y, t, ctx) as number;
+      const rot = evaluateProperty(node.properties.rotation, t, ctx) as number;
+      const scale = evaluateProperty(node.properties.scale, t, ctx) as number;
       
       let width = 100, height = 100;
       if (node.type === 'rect') {
-          width = evaluateProperty(node.properties.width, t, dummyCtx) as number;
-          height = evaluateProperty(node.properties.height, t, dummyCtx) as number;
+          width = evaluateProperty(node.properties.width, t, ctx) as number;
+          height = evaluateProperty(node.properties.height, t, ctx) as number;
       } else if (node.type === 'circle') {
-          const r = evaluateProperty(node.properties.radius, t, dummyCtx) as number;
+          const r = evaluateProperty(node.properties.radius, t, ctx) as number;
           width = r * 2; height = r * 2;
       }
 
