@@ -2,6 +2,39 @@ import { ProjectState, Command, Property } from '../types';
 import { Commands } from './commands';
 import { evaluateProperty } from './engine';
 
+// Helper to extract function body for expressions
+const extractBody = (fn: Function | string): string => {
+    let str = fn.toString().trim();
+    
+    // Handle "method" shorthand in objects { run() { ... } } -> "run() { ... }"
+    // We want to convert this to an expression body if possible, but usually expressions are arrow functions.
+    
+    // Match arrow functions: () => ... or arg => ...
+    // Note: This regex covers basic cases.
+    const arrowRegex = /^(\([^\)]*\)|[a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>/;
+    const match = arrowRegex.exec(str);
+    if (match) {
+        const bodyStart = match.index + match[0].length;
+        let body = str.substring(bodyStart).trim();
+        // If block body { return ... }, extract content
+        if (body.startsWith('{') && body.endsWith('}')) {
+            return body.substring(1, body.length - 1).trim();
+        }
+        // Implicit return
+        return `return ${body};`;
+    }
+    
+    // Match standard functions: function() { ... }
+    const start = str.indexOf('{');
+    const last = str.lastIndexOf('}');
+    if (start > -1 && last > -1) {
+        return str.substring(start + 1, last).trim();
+    }
+    
+    // Fallback for simple strings or expressions
+    return str; 
+};
+
 /**
  * Creates a sandbox context for user scripts.
  */
@@ -11,6 +44,8 @@ export const createScriptContext = (
     log: (level: 'info' | 'warn' | 'error', msg: any[]) => void
 ) => {
     const proxyCache = new Map<string, any>();
+    // Symbol to safely identify Proxies and retrieve their Node ID without colliding with user properties
+    const PROXY_ID_SYMBOL = Symbol('AnimNode.ProxyID');
 
     const getProxy = (initialId: string) => {
         if (proxyCache.has(initialId)) return proxyCache.get(initialId);
@@ -21,9 +56,14 @@ export const createScriptContext = (
 
         const proxy = new Proxy(proxyTarget, {
             get: (target, prop: string | symbol) => {
+                // Internal: Allow retrieval of the Node ID from the proxy
+                if (prop === PROXY_ID_SYMBOL) return currentRefId;
+
                 const project = projectGetter();
                 const node = project.nodes[currentRefId];
                 
+                // Allow primitive conversion to support static assignment: node.x = VAR_NODE
+                // Also allows math in script: const A = createVariable('A', 10); const B = A + 5;
                 if (prop === Symbol.toPrimitive || prop === 'valueOf') {
                      return (hint: string) => {
                          if (node && 'value' in node.properties) {
@@ -47,11 +87,14 @@ export const createScriptContext = (
                 
                 if (!node) return undefined;
                 
+                // Access Property Value
                 if (typeof prop === 'string' && prop in node.properties) {
                     const ctx: any = { project, get: (nid: string, pid: string) => evaluateProperty(project.nodes[nid]?.properties[pid], project.meta.currentTime, ctx) };
                     return evaluateProperty(node.properties[prop], project.meta.currentTime, ctx);
                 }
                 
+                // For Variable Nodes (Object/Array types), allow accessing internal properties directly
+                // e.g. const CONFIG = createVariable('C', {speed: 10}); node.x = CONFIG.speed;
                 if (node.type === 'value' && node.properties.value) {
                      const ctx: any = { project, get: (nid: string, pid: string) => evaluateProperty(project.nodes[nid]?.properties[pid], project.meta.currentTime, ctx) };
                      const innerValue = evaluateProperty(node.properties.value, project.meta.currentTime, ctx);
@@ -115,32 +158,79 @@ export const createScriptContext = (
                 }
 
                 // Construct the Property Update Object
-                // Commands.set expects Partial<Property>, not just the raw value
                 let propUpdate: Partial<Property> = {};
 
-                if (typeof value === 'function') {
-                    // CODE MODE: User assigned an arrow function
+                // 1. VARIABLE NODE ASSIGNMENT (Proxy)
+                // Check if we are assigning a Variable Node (e.g. node.x = MY_VAR)
+                // Priority: Check Proxy Symbol first to avoid it being caught as generic function/object
+                let isVariableProxy = false;
+                let proxyId = '';
+
+                if (value && (typeof value === 'object' || typeof value === 'function')) {
+                    try {
+                        // Access the ID symbol from the value if it's a proxy
+                        const id = (value as any)[PROXY_ID_SYMBOL];
+                        if (id) {
+                            isVariableProxy = true;
+                            proxyId = id;
+                        }
+                    } catch(e) { /* Ignore */ }
+                }
+
+                if (isVariableProxy) {
+                    const sourceNode = projectGetter().nodes[proxyId];
+                    if (sourceNode && sourceNode.type === 'value') {
+                        const sourceType = sourceNode.properties.value.type;
+                        
+                        // CASE A: Function Variable -> Dynamic Link (Expression)
+                        // User Request: "If function type, it is expression."
+                        if (sourceType === 'function') {
+                             propUpdate = {
+                                 mode: 'code',
+                                 expression: `return ${proxyId};` // Correctly add 'return'
+                             };
+                        } 
+                        // CASE B: Normal Value (Number/String/Obj) -> Static Snapshot
+                        // User Request: "If ordinary value, it is static."
+                        else {
+                             // Evaluate the variable's current value to snapshot it
+                             const ctx: any = { project: projectGetter(), get: (nid: string, pid: string) => evaluateProperty(projectGetter().nodes[nid]?.properties[pid], projectGetter().meta.currentTime, ctx) };
+                             const snapshotValue = evaluateProperty(sourceNode.properties.value, projectGetter().meta.currentTime, ctx);
+                             
+                             propUpdate = {
+                                 mode: 'static',
+                                 value: snapshotValue
+                             };
+                        }
+                    } else {
+                        // Fallback if source not found or not a value node
+                         propUpdate = { mode: 'static', value: 0 };
+                    }
+                } 
+                // 2. ARROW FUNCTION ASSIGNMENT (Code Mode)
+                else if (typeof value === 'function') {
+                    // User assigned an arrow function explicitly: node.x = () => ...
+                    const expressionBody = extractBody(value);
+                    
                     propUpdate = {
                         mode: 'code',
-                        expression: `return ${value.toString()};`,
-                        // If it's a value node, update type metadata
+                        expression: expressionBody,
+                        // If it's a value node being assigned a function, verify it supports it
                         ...(node.type === 'value' && prop === 'value' ? { type: 'function', value: value } : {})
                     };
-                } else {
-                    // STATIC MODE: User assigned a primitive or object
-                    // IMPORTANT: Handle Proxy objects assigned to primitive properties (e.g. node.x = VAR_NODE)
-                    // If 'value' is an object but the target prop is primitive, we should coerce it
-                    // to trigger valueOf/toString if applicable.
-                    
+                } 
+                // 3. STATIC VALUE ASSIGNMENT
+                else {
                     let finalValue = value;
                     const targetType = node.properties[prop].type;
 
                     if (typeof value === 'object' && value !== null) {
+                         // Type Coercion for Primitive Properties
                         if (targetType === 'number') {
-                            const n = Number(value);
+                            const n = Number(value); // Triggers valueOf()
                             if (!isNaN(n)) finalValue = n;
                         } else if (targetType === 'string' || targetType === 'color') {
-                            finalValue = String(value);
+                            finalValue = String(value); // Triggers toString()
                         } else if (targetType === 'boolean') {
                             finalValue = Boolean(value);
                         }
@@ -151,20 +241,19 @@ export const createScriptContext = (
                         value: finalValue
                     };
 
-                    // Special handling for Value Nodes (Variables) to update their 'type' metadata
+                    // Special handling for Value Nodes to update 'type' metadata
                     if (node.type === 'value' && prop === 'value') {
-                         if (Array.isArray(value)) {
+                         if (Array.isArray(finalValue)) {
                              propUpdate.type = 'array';
-                             try { propUpdate.expression = `return ${JSON.stringify(value)};`; } catch(e) { propUpdate.expression = 'return [];'; }
-                         } else if (value !== null && typeof value === 'object') {
-                             // Check if it's a proxy node? No, treat as object
+                             try { propUpdate.expression = `return ${JSON.stringify(finalValue)};`; } catch(e) { propUpdate.expression = 'return [];'; }
+                         } else if (finalValue !== null && typeof finalValue === 'object') {
                              propUpdate.type = 'object';
-                             try { propUpdate.expression = `return ${JSON.stringify(value)};`; } catch(e) { propUpdate.expression = 'return {};'; }
-                         } else if (typeof value === 'boolean') {
+                             try { propUpdate.expression = `return ${JSON.stringify(finalValue)};`; } catch(e) { propUpdate.expression = 'return {};'; }
+                         } else if (typeof finalValue === 'boolean') {
                              propUpdate.type = 'boolean';
-                         } else if (typeof value === 'string') {
-                             propUpdate.type = (value.startsWith('#') || value.startsWith('rgb')) ? 'color' : 'string';
-                         } else if (typeof value === 'number') {
+                         } else if (typeof finalValue === 'string') {
+                             propUpdate.type = (finalValue.startsWith('#') || finalValue.startsWith('rgb')) ? 'color' : 'string';
+                         } else if (typeof finalValue === 'number') {
                              propUpdate.type = 'number';
                          }
                     }
@@ -180,6 +269,8 @@ export const createScriptContext = (
                 }
             },
             apply: (target, thisArg, argumentsList) => {
+                // Support calling a variable if it holds a function
+                // e.g. const myFunc = createVariable('F', () => {}); myFunc();
                 const project = projectGetter();
                 const node = project.nodes[currentRefId];
                 if (node && node.type === 'value' && node.properties.value) {
@@ -205,7 +296,9 @@ export const createScriptContext = (
     const context: any = {};
     const currentProject = projectGetter();
     
+    // Inject existing nodes as globals
     currentProject.rootNodeIds.forEach(id => {
+        // Ensure ID is a valid JS identifier to avoid syntax errors if injected as global
         if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(id)) {
             context[id] = getProxy(id);
         }
@@ -225,13 +318,16 @@ export const createScriptContext = (
         return getProxy(nodeId);
     };
 
-    context.addVariable = (name: string, value: any) => {
+    // Shared implementation for creating variables
+    const handleAddVariable = (name: string, value: any) => {
         const { command, nodeId } = Commands.addNode('value', projectGetter());
         commit(command);
         
+        // Attempt to rename if name provided
         if (name && name !== nodeId) {
              const renameCmd = Commands.renameNode(nodeId, name, projectGetter());
              if (renameCmd) commit(renameCmd);
+             else log('warn', [`Could not name variable '${name}' (likely exists). Using ID '${nodeId}'.`]);
         }
         
         const finalId = (name && projectGetter().nodes[name]) ? name : nodeId;
@@ -243,7 +339,7 @@ export const createScriptContext = (
                  propUpdate = {
                      mode: 'code',
                      type: 'function',
-                     expression: `return ${value.toString()};`,
+                     expression: extractBody(value),
                      value: value 
                  };
              } else if (Array.isArray(value)) {
@@ -277,6 +373,9 @@ export const createScriptContext = (
         return getProxy(finalId);
     };
 
+    context.addVariable = handleAddVariable;
+    context.createVariable = handleAddVariable; // Alias
+
     context.removeNode = (id: string) => {
         const cmd = Commands.removeNode(id, projectGetter());
         commit(cmd);
@@ -293,107 +392,9 @@ export const createScriptContext = (
     return context;
 };
 
-// --- TRANSFORMER HELPERS ---
-
-function getBalanceChange(code: string): number {
-    let balance = 0;
-    let inString: string | null = null;
-    let i = 0;
-    const len = code.length;
-    
-    while(i < len) {
-        const char = code[i];
-        
-        if (inString) {
-             if (char === '\\') { i+=2; continue; }
-             if (char === inString) { inString = null; }
-             i++;
-             continue;
-        }
-        
-        // Escape sequence outside string (e.g. regex literal or unicode escape)
-        if (char === '\\') {
-            i += 2;
-            continue;
-        }
-        
-        // Check comments
-        if (char === '/' && code[i+1] === '/') {
-            break; // Rest of line is comment
-        }
-        if (char === '/' && code[i+1] === '*') {
-            i+=2;
-            while(i < len && !(code[i] === '*' && code[i+1] === '/')) i++;
-            i+=2;
-            continue;
-        }
-
-        // Check strings
-        if (char === '"' || char === "'" || char === '`') {
-            inString = char;
-            i++;
-            continue;
-        }
-        
-        // Brackets
-        if (char === '{' || char === '(' || char === '[') balance++;
-        if (char === '}' || char === ')' || char === ']') balance--;
-        
-        i++;
-    }
-    return balance;
-}
-
-function splitValueAndComment(code: string): { valueExpr: string, comment: string } {
-    let inString: string | null = null;
-    let i = 0;
-    const len = code.length;
-    let bracketDepth = 0;
-    let parenDepth = 0;
-    
-    while(i < len) {
-        const char = code[i];
-        
-        if (inString) {
-            if (char === '\\') { i += 2; continue; }
-            if (char === inString) { inString = null; }
-        } else {
-            if (char === '"' || char === "'" || char === '`') {
-                inString = char;
-            } else if (char === '{' || char === '[') {
-                bracketDepth++;
-            } else if (char === '}' || char === ']') {
-                bracketDepth--;
-            } else if (char === '(') {
-                parenDepth++;
-            } else if (char === ')') {
-                parenDepth--;
-            } else if (char === '/' && code[i+1] === '/' && bracketDepth === 0 && parenDepth === 0) {
-                return {
-                    valueExpr: code.substring(0, i).trim(),
-                    comment: code.substring(i)
-                };
-            }
-        }
-        i++;
-    }
-    
-    return { valueExpr: code.trim(), comment: '' };
-}
-
-// Check if a line ends with an operator that implies continuation
-function isIncompleteExpression(code: string): boolean {
-    const trimmed = code.trim();
-    // Check for arrow function starter
-    if (trimmed.endsWith('=>')) return true;
-    // Check for common operators that imply more code coming
-    if (/[\+\-\*\/\%\,\(\[\{\?\:\&\|\^=]$/.test(trimmed)) return true;
-    return false;
-}
-
 /**
  * Executes a string of code within the project context.
- * Transforms top-level declarations (const x = ...) into addVariable calls.
+ * Standard JS execution.
  */
 export const executeScript = (
     code: string, 
@@ -401,89 +402,15 @@ export const executeScript = (
     commit: (cmd: Command) => void,
     logger: { log: (l: 'info'|'warn'|'error', m: any[]) => void }
 ) => {
-    // Robust Transformer: Handles multi-line declarations by tracking brace balance
-    const lines = code.split('\n');
-    let transformedCode = '';
-    let buffer = '';
-    
-    interface DeclState { indent: string, type: string, name: string, balance: number }
-    let declState: DeclState | null = null;
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        
-        if (declState) {
-            buffer += '\n' + line;
-            declState.balance += getBalanceChange(line);
-            
-            // Check if declaration ended (balance returned to 0 or less AND not incomplete)
-            if (declState.balance <= 0 && !isIncompleteExpression(buffer)) {
-                 let content = buffer.trim();
-                 let suffix = '';
-                 
-                 // Handle explicit semicolon at end of block
-                 if (content.endsWith(';')) {
-                     content = content.slice(0, -1);
-                     suffix = ';';
-                 }
-                 
-                 // Wrap the full multi-line content
-                 transformedCode += `${declState.indent}const ${declState.name} = addVariable('${declState.name}', ${content})${suffix}\n`;
-                 declState = null;
-                 buffer = '';
-            }
-        } else {
-            // Scan for new declaration
-            // Matches: const/let/var NAME = ...
-            const match = line.match(/^(\s*)(const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(.+)$/);
-            
-            if (match) {
-                const indent = match[1];
-                const type = match[2];
-                const name = match[3];
-                const remainder = match[4];
-                
-                // EXCLUSION: Do not transform calls to built-in APIs
-                // This prevents `const r = addNode(...)` from being wrapped in `addVariable`
-                if (/^(addNode|removeNode|clear|log|warn|error|addVariable)\s*\(/.test(remainder.trim())) {
-                    transformedCode += line + '\n';
-                    continue;
-                }
-
-                const balance = getBalanceChange(remainder);
-                // If it looks like a multi-line start (positive balance OR ends with operator)
-                if (balance > 0 || isIncompleteExpression(remainder)) {
-                    // Start of multi-line declaration
-                    declState = { indent, type, name, balance };
-                    buffer = remainder;
-                } else {
-                    // Single line declaration
-                    let { valueExpr, comment } = splitValueAndComment(remainder);
-                    let semi = '';
-                    if (valueExpr.endsWith(';')) {
-                        valueExpr = valueExpr.slice(0, -1);
-                        semi = ';';
-                    }
-                    transformedCode += `${indent}const ${name} = addVariable('${name}', ${valueExpr})${semi} ${comment}\n`;
-                }
-            } else {
-                // Normal line
-                transformedCode += line + '\n';
-            }
-        }
-    }
-    
-    // Fallback if EOF reached while still in declaration (e.g. missing closing brace)
-    if (declState) {
-        transformedCode += `${declState.indent}const ${declState.name} = addVariable('${declState.name}', ${buffer});\n`;
-    }
-
+    // Create the context with proxies and API
     const context = createScriptContext(projectGetter, commit, (l, m) => logger.log(l, m));
+    
     const paramNames = Object.keys(context);
     const paramValues = Object.values(context);
     
     try {
-        const fn = new Function(...paramNames, `"use strict"; ${transformedCode}`);
+        // Execute raw code with Strict Mode
+        const fn = new Function(...paramNames, `"use strict";\n${code}`);
         fn(...paramValues);
         return true;
     } catch (e: any) {

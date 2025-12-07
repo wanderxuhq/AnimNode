@@ -27,28 +27,29 @@
 | 函数签名 | 返回值 | 描述 |
 | :--- | :--- | :--- |
 | `addNode(type: string)` | `NodeProxy` | 创建新节点。`type` 可选值: `'rect'`, `'circle'`, `'vector'`。默认位置为屏幕中心。 |
-| `addVariable(name: string, value: any)` | `NodeProxy` | 创建全局变量。可以直接通过名称在表达式中使用。 |
+| `createVariable(name: string, value: any)` | `NodeProxy` | 创建全局变量节点。返回的对象可像普通变量一样调用，且可在表达式中通过变量名引用。 |
 | `removeNode(id: string)` | `void` | 删除指定 ID 的节点。 |
 | `clear()` | `void` | **重要**: 清空当前画布上的所有节点。建议在生成式脚本开头调用。 |
 | `log(...args)` | `void` | 输出信息到控制台。 |
 | `warn(...args)` | `void` | 输出警告。 |
 | `error(...args)` | `void` | 输出错误。 |
 
-### 变量定义语法 (Variable Declaration Syntax)
-为了方便定义参数，脚本支持将顶层 `const`/`let`/`var` 声明自动转换为全局变量节点。
+### 变量定义 (Variable Creation)
+要创建可在表达式中引用的全局变量，**必须**使用 `createVariable` (或 `addVariable`)。
 
 ```javascript
-// 下面的语句会自动创建一个名为 'ORBIT_R' 的变量节点，初始值为 150
-const ORBIT_R = 150;
+// 创建全局变量 'SUN_X'，初始值为 400
+// 该变量会自动显示在场景列表中，并可在其他节点的表达式中使用
+const sunX = createVariable('SUN_X', 400);
 
-// 支持尾随注释
-const SUN_X = 400; // 太阳的 X 坐标
+// 创建对象类型的全局变量
+const config = createVariable('CONFIG', { 
+    speed: 2, 
+    color: '#ff0000' 
+});
 
-// 颜色定义 (会自动识别类型)
-const THEME_COLOR = "#ff0000";
-
-// 等同于调用:
-// const ORBIT_R = addVariable('ORBIT_R', 150);
+// 普通脚本变量 (不会创建节点，仅在脚本执行期间有效，无法在表达式中引用)
+const tempValue = 100; 
 ```
 
 ### 内置对象
@@ -60,7 +61,7 @@ const THEME_COLOR = "#ff0000";
 
 ## 4. 节点对象 (Node Proxy)
 
-`addNode` 返回的对象或通过 ID 访问的全局对象。
+`addNode` 或 `createVariable` 返回的对象。
 
 ### 元数据属性 (Metadata)
 | 属性 | 类型 | 读/写 | 描述 |
@@ -109,27 +110,37 @@ const THEME_COLOR = "#ff0000";
 
 ## 5. 赋值语法规则 (Assignment Rules)
 
-AnimNode 支持两种属性赋值模式。AI 应根据需求选择模式。
+AnimNode 支持两种属性赋值模式。
 
 ### 模式 A: 静态赋值 (Static Assignment)
 设置一个固定的常数值。
 ```javascript
-node.x = 100; // 绝对位置，距离左边 100px
-node.fill = "#ff0000";
-node.id = "myNode";
+// 直接赋值
+node.x = 100; 
+
+// 使用变量赋值 (注意：这是静态快照！)
+const R = createVariable('R', 50);
+node.radius = R; 
+// 结果: node.radius 的值被静态设置为 50。
+// 如果后续 R 变为 100，node.radius 仍然是 50，除非重新执行脚本。
 ```
 
 ### 模式 B: 表达式赋值 (Expression Assignment)
-设置一个随时间变化的动画逻辑。
-**语法**: 必须赋值一个 **箭头函数 (Arrow Function)**。
+设置一个随时间变化的动画逻辑或动态链接。
+**语法**: 赋值一个 **箭头函数 (Arrow Function)**。
 
 ```javascript
-// 正确写法
-// 让 x 在 300 到 500 之间往复运动 (中心 400)
+// 正确写法：创建动态表达式
+// 让 x 在 300 到 500 之间往复运动
 node.x = () => 400 + Math.sin(t) * 100;
 
-// 错误写法 (这只是赋值了计算结果的静态值)
-node.x = Math.sin(t) * 100; 
+// 动态引用全局变量
+const orbitR = createVariable('ORBIT_R', 150);
+
+// 注意使用箭头函数 () => ...
+// 这样 engine 会保存 "return ORBIT_R;" 作为表达式
+// 结果: node.x 会每一帧读取 ORBIT_R 的当前值
+node.x = () => 400 + Math.cos(t) * ORBIT_R; 
 ```
 
 ### 表达式内部环境
@@ -138,110 +149,42 @@ node.x = Math.sin(t) * 100;
 1.  **`t`** (`number`): 全局时间，单位为秒。
 2.  **`val`** (`any`): 该属性当前的静态基准值。
 3.  **`ctx`** (`object`): 上下文工具对象。
-4.  **`全局变量`**: 直接使用通过 `addVariable` 创建的变量名。
+4.  **`全局变量`**: 直接使用通过 `createVariable` 创建的变量名 (Node ID)。
 
 ---
 
-## 6. 上下文工具 (Context API)
-
-在表达式内部用于获取外部数据。
-
-### 获取其他节点数据
-`ctx.get(nodeId: string, property: string): number | string`
-
-用于实现父子跟随、约束等效果。
-```javascript
-// 让 B 跟随 A
-nodeB.x = () => ctx.get('nodeA', 'x') + 50;
-```
-
-### 音频响应 (Audio Reactive)
-`ctx.audio`: 包含当前帧的频谱分析数据。
-*   `ctx.audio.bass` (0-1): 低频能量
-*   `ctx.audio.mid` (0-1): 中频能量
-*   `ctx.audio.treble` (0-1): 高频能量
-
-```javascript
-// 随低音缩放
-node.scale = () => 1 + ctx.audio.bass * 2;
-```
-
----
-
-## 7. 代码生成示例 (Examples)
-
-### 场景初始化模板
-```javascript
-clear(); // 1. 清理
-const bg = addNode('rect'); // 2. 创建
-bg.width = 800;
-bg.height = 600;
-bg.x = 400; // 居中 (800/2)
-bg.y = 300; // 居中 (600/2)
-bg.fill = "#111";
-```
+## 6. 代码生成示例 (Examples)
 
 ### 全局变量示例
 ```javascript
 clear();
-// 定义太阳参数
-// 下方语句会自动转换为 addVariable('SUN_X', 400)，创建全局变量节点
-const SUN_X = 400; // 太阳的 X 坐标
-const SUN_Y = 300;
-const ORBIT_R = 150;
+// 1. 创建全局变量 (会自动显示在列表中)
+const SUN_X = createVariable('SUN_X', 400); 
+const ORBIT_R = createVariable('ORBIT_R', 150);
 
+// 2. 创建节点
 const sun = addNode('circle');
 sun.radius = 30;
 sun.fill = "#fbbf24";
-sun.x = () => SUN_X; // 直接使用变量
-sun.y = () => SUN_Y;
+// 3. 动态引用变量 (使用箭头函数)
+sun.x = () => SUN_X; 
+sun.y = 300;
 
 const earth = addNode('circle');
 earth.radius = 10;
 earth.fill = "#3b82f6";
-// 使用变量计算位置
+// 4. 在表达式中使用变量运算
 earth.x = () => SUN_X + Math.cos(t) * ORBIT_R;
-earth.y = () => SUN_Y + Math.sin(t) * ORBIT_R;
+earth.y = () => 300 + Math.sin(t) * ORBIT_R;
 ```
 
 ### 批量生成 (Grid System)
 ```javascript
 clear();
-const count = 5;
+const count = 5; // 这是一个普通的脚本局部变量，不会创建节点
 for(let i=0; i<count; i++) {
     const n = addNode('rect');
-    // 基于中心点偏移
     n.x = 400 + (i - count/2) * 60;
-    // 每个节点有独立的相位偏移
     n.y = () => 300 + Math.sin(t + i) * 50; 
 }
 ```
-
----
-
-## 8. 安全沙箱与限制 (Sandbox & Limitations)
-
-为了保证动画渲染的确定性和安全性，脚本和表达式运行在隔离的沙箱中。
-
-### 允许使用的全局对象 (Allowed Globals)
-仅以下 JavaScript 标准对象可用：
-*   `Math` (e.g. `Math.sin`, `Math.random`)
-*   `Date`
-*   `Array` (e.g. `.map`, `.filter`)
-*   `Object`, `String`, `Number`, `Boolean`
-*   `JSON`
-*   `RegExp`
-*   `parseInt`, `parseFloat`, `isNaN`, `isFinite`
-*   `console` (输出重定向到应用内控制台)
-
-### 禁止使用的 API (Forbidden APIs)
-以下 API **不可用**，尝试访问将返回 `undefined` 或抛出错误：
-*   ❌ **DOM API**: `window`, `document`, `HTMLElement`, `alert` 等。
-*   ❌ **网络请求**: `fetch`, `XMLHttpRequest`。
-*   ❌ **定时器**: `setTimeout`, `setInterval` (动画驱动应完全依赖 `t` 变量)。
-*   ❌ **本地存储**: `localStorage`, `sessionStorage`.
-*   ❌ **动态执行**: `eval`, `new Function` (但在控制台顶层脚本中可以使用 `new Function`，属性表达式中禁用)。
-
-### 设计原则
-*   **纯函数**: 表达式应为关于时间 `t` 的纯函数。给定相同的 `t`，应始终返回相同的结果。
-*   **无副作用**: 表达式不应修改外部状态（如设置其他节点的属性），只能返回当前属性的值。要修改其他节点，请使用控制台脚本一次性执行，而不是在每帧的表达式中执行。变量应该支持不同的类型，除了数字和字符串，还有支持数组、对象、函数等js的类型
