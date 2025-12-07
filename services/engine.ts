@@ -301,6 +301,117 @@ export function evaluateProperty(
 }
 
 /**
+ * Lightweight Lexer to find referenced variables in code
+ * Skips strings, comments, and property access (obj.prop)
+ */
+function getReferencedVariables(code: string, variables: Set<string>): Set<string> {
+    const refs = new Set<string>();
+    if (!code) return refs;
+    let i = 0;
+    const len = code.length;
+  
+    while (i < len) {
+      const char = code[i];
+  
+      // Skip Comments //
+      if (char === '/' && code[i + 1] === '/') {
+        i += 2;
+        while (i < len && code[i] !== '\n') i++;
+        continue;
+      }
+      // Skip Comments /* */
+      if (char === '/' && code[i + 1] === '*') {
+        i += 2;
+        while (i < len && !(code[i] === '*' && code[i + 1] === '/')) i++;
+        i += 2;
+        continue;
+      }
+  
+      // Skip Strings " ' `
+      if (char === '"' || char === "'" || char === '`') {
+        const quote = char;
+        i++;
+        while (i < len) {
+          if (code[i] === '\\') {
+            i += 2;
+          } else if (code[i] === quote) {
+            i++;
+            break;
+          } else {
+            i++;
+          }
+        }
+        continue;
+      }
+  
+      // Identifiers
+      if (/[a-zA-Z_$]/.test(char)) {
+        let start = i;
+        while (i < len && /[a-zA-Z0-9_$]/.test(code[i])) i++;
+        const word = code.slice(start, i);
+  
+        // Check for property access (dot before)
+        // Check backwards from start-1 for non-whitespace
+        let j = start - 1;
+        while(j >= 0 && /\s/.test(code[j])) j--;
+        
+        const isPropAccess = j >= 0 && code[j] === '.';
+  
+        if (!isPropAccess && variables.has(word)) {
+          refs.add(word);
+        }
+        // i is already at next char
+        continue;
+      }
+  
+      i++;
+    }
+    return refs;
+}
+
+/**
+ * Static Analysis: Find unused variables
+ * Returns a Set of variable IDs that are NOT referenced by any other node
+ */
+export function findUnusedVariables(nodes: Record<string, Node>): Set<string> {
+    const variables = new Set<string>();
+    const unused = new Set<string>();
+    
+    // 1. Collect all variables
+    Object.values(nodes).forEach(n => {
+        if (n.type === 'value') {
+            variables.add(n.id);
+            unused.add(n.id);
+        }
+    });
+    
+    // 2. Scan all properties
+    Object.values(nodes).forEach(node => {
+        Object.values(node.properties).forEach(prop => {
+            if (prop.mode === 'code') {
+                const refs = getReferencedVariables(prop.expression, variables);
+                refs.forEach(r => unused.delete(r));
+                
+                // Explicit check for ctx.get calls
+                const getRegex = /ctx\.get\(\s*['"]([^'"]+)['"]/g;
+                let match;
+                while ((match = getRegex.exec(prop.expression)) !== null) {
+                    unused.delete(match[1]);
+                }
+
+            } else if (prop.mode === 'link') {
+                 if (typeof prop.value === 'string' && prop.value.includes(':')) {
+                     const [targetId] = prop.value.split(':');
+                     unused.delete(targetId);
+                 }
+            }
+        });
+    });
+
+    return unused;
+}
+
+/**
  * Renders the project to an SVG (React Node tree)
  */
 export function renderSVG(project: ProjectState, audioData?: any) {

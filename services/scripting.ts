@@ -198,25 +198,31 @@ export const createScriptContext = (
 
         // 3. Set Initial Value and Type
         if (value !== undefined) {
-             let typeStr = 'number';
-             if (typeof value === 'boolean') typeStr = 'boolean';
-             else if (typeof value === 'string') {
-                 // Try to detect colors
-                 if (value.startsWith('#') || value.startsWith('rgb')) typeStr = 'color';
-                 else typeStr = 'string';
+             // Handle Dynamic Function Variables
+             if (typeof value === 'function') {
+                 const setCmd = Commands.set(projectGetter(), finalId, 'value', value, undefined, 'Set Initial Value');
+                 commit(setCmd);
              } else {
-                 typeStr = 'number'; // fallback
+                 let typeStr = 'number';
+                 if (typeof value === 'boolean') typeStr = 'boolean';
+                 else if (typeof value === 'string') {
+                     // Try to detect colors
+                     if (value.startsWith('#') || value.startsWith('rgb')) typeStr = 'color';
+                     else typeStr = 'string';
+                 } else {
+                     typeStr = 'number'; // fallback
+                 }
+
+                 // We pass a partial property including type to ensure UI updates correctly
+                 const propUpdate = {
+                     value: value,
+                     type: typeStr as string,
+                     mode: 'static'
+                 };
+
+                 const setCmd = Commands.set(projectGetter(), finalId, 'value', propUpdate, undefined, 'Set Initial Value');
+                 commit(setCmd);
              }
-
-             // We pass a partial property including type to ensure UI updates correctly
-             const propUpdate = {
-                 value: value,
-                 type: typeStr as any,
-                 mode: 'static'
-             };
-
-             const setCmd = Commands.set(projectGetter(), finalId, 'value', propUpdate, undefined, 'Set Initial Value');
-             commit(setCmd);
         }
         
         log('info', [`Created variable: ${finalId}`]);
@@ -238,6 +244,41 @@ export const createScriptContext = (
 
     return context;
 };
+
+// Helper to extract value expression safely, ignoring comments
+function splitValueAndComment(code: string): { valueExpr: string, comment: string } {
+    let inString: string | null = null; // " or ' or `
+    let i = 0;
+    const len = code.length;
+    
+    while(i < len) {
+        const char = code[i];
+        
+        if (inString) {
+            if (char === '\\') {
+                i += 2; // Skip next char
+                continue;
+            }
+            if (char === inString) {
+                inString = null;
+            }
+        } else {
+            if (char === '"' || char === "'" || char === '`') {
+                inString = char;
+            } else if (char === '/' && code[i+1] === '/') {
+                // Found single line comment
+                return {
+                    valueExpr: code.substring(0, i).trim(),
+                    comment: code.substring(i)
+                };
+            }
+        }
+        i++;
+    }
+    
+    // No comment found
+    return { valueExpr: code.trim(), comment: '' };
+}
 
 /**
  * Executes a string of code within the project context.
@@ -278,24 +319,10 @@ export const executeScript = (
                 return line;
             }
             
-            // Manual parsing for value vs comment to handle:
-            // "10; // comment" or "10 // comment"
-            // We strip trailing comments to ensure the value passed to addVariable is clean.
-            // NOTE: This simple split might break strings containing '//', e.g. "http://..."
-            // Assuming variables are mostly numeric/color for this DSL feature.
+            // Parsing for value vs comment using a char-by-char scanner to respect strings
+            let { valueExpr, comment } = splitValueAndComment(remainder);
             
-            let valueExpr = remainder;
-            let comment = '';
-            
-            const commentIdx = remainder.indexOf('//');
-            if (commentIdx !== -1) {
-                valueExpr = remainder.substring(0, commentIdx);
-                comment = remainder.substring(commentIdx);
-            }
-            
-            valueExpr = valueExpr.trim();
-            
-            // Handle semicolon
+            // Handle trailing semicolon
             let semi = '';
             if (valueExpr.endsWith(';')) {
                 semi = ';';

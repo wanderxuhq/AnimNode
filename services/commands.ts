@@ -354,7 +354,17 @@ export const Commands = {
   ): Command => {
       const applyPos = (s: ProjectState, x: number, y: number) => {
           const n = s.nodes[nodeId];
-          if(!n) return s;
+          if (!n) return s;
+          
+          // Helper to create static prop update
+          // This ensures we switch to static mode if it was code/linked before, which is standard for drag operations
+          const updateProp = (prop: Property, val: number): Property => ({
+              ...prop,
+              mode: 'static',
+              value: val,
+              expression: `return ${val};`
+          });
+
           return {
               ...s,
               nodes: {
@@ -363,8 +373,8 @@ export const Commands = {
                       ...n,
                       properties: {
                           ...n.properties,
-                          x: { ...n.properties.x, value: x, mode: 'static' as const, expression: `return ${x};` },
-                          y: { ...n.properties.y, value: y, mode: 'static' as const, expression: `return ${y};` },
+                          x: updateProp(n.properties.x, x),
+                          y: updateProp(n.properties.y, y)
                       }
                   }
               }
@@ -373,7 +383,7 @@ export const Commands = {
 
       return {
           id: crypto.randomUUID(),
-          name: "Move Node",
+          name: `Move ${nodeId}`,
           timestamp: Date.now(),
           undo: (s) => applyPos(s, oldPos.x, oldPos.y),
           redo: (s) => applyPos(s, newPos.x, newPos.y)
@@ -381,54 +391,62 @@ export const Commands = {
   },
 
   /**
-   * Batch multiple commands into one
+   * Combine multiple commands into one (Batch)
    */
-  batch: (commands: Command[], name: string): Command => {
-    return {
-        id: crypto.randomUUID(),
-        name,
-        timestamp: Date.now(),
-        undo: (state) => {
-            let s = state;
-            for (let i = commands.length - 1; i >= 0; i--) {
-                s = commands[i].undo(s);
-            }
-            return s;
-        },
-        redo: (state) => {
-            let s = state;
-            for (const cmd of commands) {
-                s = cmd.redo(s);
-            }
-            return s;
-        }
-    };
+  batch: (commands: Command[], name?: string): Command => {
+      return {
+          id: crypto.randomUUID(),
+          name: name || `Batch (${commands.length})`,
+          timestamp: Date.now(),
+          undo: (s) => {
+              let next = s;
+              // Undo in reverse order
+              for (let i = commands.length - 1; i >= 0; i--) {
+                  next = commands[i].undo(next);
+              }
+              return next;
+          },
+          redo: (s) => {
+              let next = s;
+              for (const cmd of commands) {
+                  next = cmd.redo(next);
+              }
+              return next;
+          }
+      };
   },
 
   /**
-   * Clear entire project
+   * Clear the project (reset to empty)
    */
   clearProject: (project: ProjectState): Command => {
-      const oldNodes = project.nodes;
-      const oldRoots = project.rootNodeIds;
-      const oldSelection = project.selection;
+      const oldState = {
+          nodes: project.nodes,
+          rootNodeIds: project.rootNodeIds,
+          selection: project.selection
+      };
+
+      const clear = (s: ProjectState) => ({
+          ...s,
+          nodes: {},
+          rootNodeIds: [],
+          selection: null
+      });
+
+      const restore = (s: ProjectState) => ({
+          ...s,
+          nodes: oldState.nodes,
+          rootNodeIds: oldState.rootNodeIds,
+          selection: oldState.selection
+      });
 
       return {
           id: crypto.randomUUID(),
           name: 'Clear Project',
           timestamp: Date.now(),
-          undo: (s) => ({
-              ...s,
-              nodes: oldNodes,
-              rootNodeIds: oldRoots,
-              selection: oldSelection
-          }),
-          redo: (s) => ({
-              ...s,
-              nodes: {},
-              rootNodeIds: [],
-              selection: null
-          })
+          undo: restore,
+          redo: clear
       };
   }
+
 };

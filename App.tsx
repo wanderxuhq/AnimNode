@@ -1,4 +1,6 @@
-import React, { useRef, useState, useEffect } from 'react';
+
+
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { Timeline } from './components/Timeline';
 import { PropertyPanel } from './components/PropertyPanel';
 import { Viewport } from './components/Viewport';
@@ -11,6 +13,7 @@ import { Square, Circle, Download, Layout, Layers, Volume2, Network, Cpu, Image,
 import { HistoryPanel } from './components/HistoryPanel';
 import { DebugPanel } from './components/DebugPanel';
 import { Node } from './types';
+import { findUnusedVariables } from './services/engine';
 
 export default function App() {
   const { 
@@ -44,6 +47,10 @@ export default function App() {
   const [dragPosition, setDragPosition] = useState<'top' | 'bottom' | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Calculate unused variables for UI highlighting
+  // Memoized based on nodes structure to avoid recalc on every frame tick (currentTime change)
+  const unusedVariables = useMemo(() => findUnusedVariables(project.nodes), [project.nodes]);
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -225,10 +232,10 @@ export default function App() {
 
   const isGraphMode = project.meta.viewMode === 'graph';
 
-  const getNodeIcon = (node: Node) => {
+  const getNodeIcon = (node: Node, isUnused: boolean = false) => {
       if (node.type === 'rect') return <Square size={12}/>;
       if (node.type === 'circle') return <Circle size={12}/>;
-      if (node.type === 'value') return <Variable size={12} className="text-yellow-400"/>;
+      if (node.type === 'value') return <Variable size={12} className={isUnused ? "text-amber-500" : "text-blue-400"}/>;
       return <Layout size={12} className="text-emerald-500"/>;
   };
 
@@ -328,7 +335,9 @@ export default function App() {
                          const node = project.nodes[id];
                          if (!node) return null;
                          const isDragTarget = dragOverId === id;
-                         
+                         const isVariable = node.type === 'value';
+                         const isUnused = isVariable && unusedVariables.has(id);
+
                          return (
                             <div 
                                 key={id}
@@ -352,9 +361,11 @@ export default function App() {
                                 <GripVertical size={12} className="text-zinc-600 opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing shrink-0" />
                                 <span className="text-[10px] text-zinc-600 font-mono shrink-0 select-none mr-1 opacity-50">#{index}</span>
                                 
-                                {getNodeIcon(node)}
+                                {getNodeIcon(node, isUnused)}
                                 
-                                <span className="truncate flex-1 font-mono text-xs">{id}</span>
+                                <span className={`truncate flex-1 font-mono text-xs ${isVariable ? (isUnused ? 'text-amber-500' : 'text-blue-400 font-bold') : ''}`}>
+                                  {id}
+                                </span>
                             </div>
                         );
                     })}
