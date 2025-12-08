@@ -1,4 +1,6 @@
-import { ProjectState, Node } from './types';
+
+
+import { ProjectState, Node, PropertyType } from './types';
 
 export const CANVAS_WIDTH = 800;
 export const CANVAS_HEIGHT = 600;
@@ -15,14 +17,14 @@ const uuid = () => {
   });
 };
 
-const createProp = (name: string, type: any, value: any): any => ({
-  id: uuid(),
-  name,
+const createProp = (type: PropertyType, value: any): any => ({
   type,
-  mode: 'static',
-  value,
-  keyframes: [],
-  expression: `return ${JSON.stringify(value)};`
+  value
+});
+
+const createExpr = (expression: string): any => ({
+    type: 'expression',
+    value: expression
 });
 
 // Use friendly IDs for better UX
@@ -55,13 +57,14 @@ export const INITIAL_PROJECT: ProjectState = {
       type: 'rect',
       parentId: null,
       properties: {
-        x: { ...createProp('X Position', 'number', 400), mode: 'code', expression: 'return 400 + Math.sin(t * 2) * 200;' },
-        y: { ...createProp('Y Position', 'number', 300), mode: 'static', expression: 'return 300;' },
-        width: createProp('Width', 'number', 100),
-        height: { ...createProp('Height', 'number', 100), mode: 'code', expression: '// Scales with Bass\nreturn 100 + (ctx.audio.bass || 0) * 100;' },
-        rotation: { ...createProp('Rotation', 'number', 0), mode: 'code', expression: 'return t * 45;' },
-        scale: createProp('Scale', 'number', 1),
-        fill: createProp('Fill Color', 'color', '#3b82f6'),
+        x: createExpr('return 400 + Math.sin(t * 2) * 200;'),
+        y: createProp('number', 300),
+        width: createProp('number', 100),
+        height: createExpr('// Scales with Bass\nreturn 100 + (ctx.audio.bass || 0) * 100;'),
+        rotation: createExpr('return t * 45;'),
+        scale: createProp('number', 1),
+        fill: createProp('color', '#3b82f6'),
+        path: createExpr('const w = prop("width"); const h = prop("height"); return `M ${-w/2} ${-h/2} L ${w/2} ${-h/2} L ${w/2} ${h/2} L ${-w/2} ${h/2} Z`;')
       }
     },
     [demoCircleId]: {
@@ -69,16 +72,13 @@ export const INITIAL_PROJECT: ProjectState = {
       type: 'circle',
       parentId: null,
       properties: {
-        x: { ...createProp('X Position', 'number', 600), mode: 'code', expression: 'return 400 + Math.cos(t * 3) * 150;' },
-        y: { ...createProp('Y Position', 'number', 300), mode: 'code', expression: 'return 300 + Math.sin(t * 3) * 150;' },
-        rotation: createProp('Rotation', 'number', 0),
-        scale: createProp('Scale', 'number', 1),
-        radius: { ...createProp('Radius', 'number', 20), mode: 'keyframe', keyframes: [
-            { time: 0, value: 20 },
-            { time: 2, value: 50 },
-            { time: 4, value: 20 }
-        ]},
-        fill: createProp('Fill Color', 'color', '#ec4899'),
+        x: createExpr('return 400 + Math.cos(t * 3) * 150;'),
+        y: createExpr('return 300 + Math.sin(t * 3) * 150;'),
+        rotation: createProp('number', 0),
+        scale: createProp('number', 1),
+        radius: createExpr('return 20 + Math.abs(Math.sin(t)) * 30;'),
+        fill: createProp('color', '#ec4899'),
+        path: createExpr('const r = prop("radius"); return `M ${-r} 0 A ${r} ${r} 0 1 1 ${r} 0 A ${r} ${r} 0 1 1 ${-r} 0 Z`;')
       }
     }
   }

@@ -60,12 +60,16 @@ fn vs_main(input : VertexInput) -> VertexOutput {
   let s = sin(rad);
   let rotMat = mat2x2<f32>(c, s, -s, c); // Standard rotation
 
-  // Center the quad (-0.5 to 0.5)
-  let centered = input.position - vec2<f32>(0.5, 0.5);
+  // Vertices are 0..1
+  // We want to transform them such that 0,0 is the anchor (Top Left)
+  // Since scaling and rotation happen around the anchor 0,0 in local space,
+  // we do NOT subtract 0.5.
   
   // Scale -> Rotate -> Translate
   // posWorld is in "Canvas Pixels"
-  let posWorld = (rotMat * (centered * input.instanceSize)) + input.instancePos;
+  // input.position is 0..1, instanceSize scales it to w,h
+  // This effectively means the vertex (0,0) stays at 0,0 local, which becomes instancePos world.
+  let posWorld = (rotMat * (input.position * input.instanceSize)) + input.instancePos;
   
   // Project to Clip Space
   // Canvas Coords: (0,0) Top-Left, (W,H) Bottom-Right
@@ -92,6 +96,7 @@ fn fs_main(input : VertexOutput) -> @location(0) vec4<f32> {
   
   if (input.shapeType > 0.5) {
     // Circle Logic
+    // UVs are 0..1, Center is 0.5, 0.5
     let dist = distance(input.uv, vec2<f32>(0.5, 0.5));
     if (dist > 0.5) {
       discard;
@@ -144,19 +149,32 @@ export class WebGPURenderer {
         });
 
         // 1. Static Quad Vertices (0..1)
+        // Order: TL, BL, TR, BR (Strip)
         const vertexData = new Float32Array([
-          0, 1, // TL
-          0, 0, // BL
-          1, 1, // TR
-          1, 0, // BR
+          0, 1, // BL (Actually, Y=1 is down in Canvas but usually up in UVs... let's stick to standard strip logic)
+                // Wait, Y-down canvas means 0 is top, 1 is bottom.
+                // Vertex Shader assumes 0,0 input maps to top-left.
+                // Let's use 0..1 for standard Y-down mapping logic in Vertex Shader.
+          0, 1, // BL (x=0, y=1) -> Bottom Left
+          0, 0, // TL (x=0, y=0) -> Top Left
+          1, 1, // BR (x=1, y=1) -> Bottom Right
+          1, 0, // TR (x=1, y=0) -> Top Right
+        ]);
+        // Revised Vertex Data for Triangle Strip to make a Quad 0,0 to 1,1
+        // P0 (0,0), P1 (0,1), P2 (1,0), P3 (1,1) -> Z pattern strip
+        const simpleVertexData = new Float32Array([
+            0, 0, // Top-Left
+            0, 1, // Bottom-Left
+            1, 0, // Top-Right
+            1, 1  // Bottom-Right
         ]);
 
         this.vertexBuffer = this.device.createBuffer({
-          size: vertexData.byteLength,
+          size: simpleVertexData.byteLength,
           usage: USAGE.VERTEX | USAGE.COPY_DST,
           mappedAtCreation: true,
         });
-        new Float32Array(this.vertexBuffer.getMappedRange()).set(vertexData);
+        new Float32Array(this.vertexBuffer.getMappedRange()).set(simpleVertexData);
         this.vertexBuffer.unmap();
 
         // 2. Instance Buffer

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Property, Node, Command } from '../types';
-import { Code, Key, Hash, Link as LinkIcon, AlertTriangle, Braces, List, FunctionSquare } from 'lucide-react';
-import { detectLinkCycle } from '../services/engine';
+import { Property, Node, Command, PropertyType, Keyframe } from '../types';
+import { Code, Hash, Link as LinkIcon, Braces, List, FunctionSquare, Lock, Diamond } from 'lucide-react';
+import { detectLinkCycle, evaluateProperty } from '../services/engine';
 import { consoleService } from '../services/console';
 import { Commands } from '../services/commands';
 
@@ -10,16 +10,61 @@ interface PropertyInputProps {
   propKey: string;
   nodeId: string;
   nodes: Record<string, Node>;
+  currentTime: number;
   onUpdate: (nid: string, pKey: string, u: Partial<Property>) => void;
   onCommit: (cmd: Command) => void;
   autoFocusTrigger?: number;
+  onToggleKeyframe: (nid: string, pKey: string, val: any) => void;
 }
 
-export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nodeId, nodes, onUpdate, onCommit, autoFocusTrigger }) => {
-  const [localValue, setLocalValue] = useState<string>(String(prop.value));
-  const [localExpression, setLocalExpression] = useState<string>(prop.expression);
+const formatLabel = (key: string) => {
+  const map: Record<string, string> = {
+    x: 'X Position',
+    y: 'Y Position',
+    rotation: 'Rotation',
+    scale: 'Scale',
+    opacity: 'Opacity',
+    width: 'Width',
+    height: 'Height',
+    radius: 'Radius',
+    fill: 'Fill',
+    stroke: 'Stroke',
+    strokeWidth: 'Stroke Width',
+    d: 'Path Data',
+    path: 'Path',
+    value: 'Value'
+  };
+  if (map[key]) return map[key];
+  return key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+};
 
-  // For object/array types, localValue stores the stringified JSON
+export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nodeId, nodes, currentTime, onUpdate, onCommit, autoFocusTrigger, onToggleKeyframe }) => {
+  // Determine if we are in a visual editing mode based on type
+  const isExpression = prop.type === 'expression';
+  const isRef = prop.type === 'ref';
+  const isStatic = !isExpression && !isRef;
+  const nodeType = nodes[nodeId]?.type;
+  
+  // Special Read-Only Logic for derived paths on Shapes
+  const isDerivedPath = propKey === 'path' && (nodeType === 'rect' || nodeType === 'circle');
+
+  // Initialize local state
+  const getInitialValue = () => {
+      if (isStatic) {
+          const v = prop.value;
+          if (prop.type === 'object' || prop.type === 'array') {
+              try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+          }
+          if (prop.type === 'function') {
+              return v ? v.toString() : '() => {}';
+          }
+          return String(v);
+      }
+      return '0';
+  };
+
+  const [localValue, setLocalValue] = useState<string>(getInitialValue());
+  const [localExpression, setLocalExpression] = useState<string>(isExpression ? String(prop.value) : '');
   const [jsonError, setJsonError] = useState<string | null>(null);
 
   const isEditingRef = useRef(false);
@@ -36,39 +81,66 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       latestState.current = { localValue, localExpression, prop, nodeId, propKey, nodes };
   }, [localValue, localExpression, prop, nodeId, propKey, nodes]);
 
+  // Sync props to state when not editing
   useEffect(() => {
     if (!isEditingRef.current) {
-        if (prop.type === 'object' || prop.type === 'array') {
-            try {
-                setLocalValue(JSON.stringify(prop.value, null, 2));
-            } catch (e) {
-                setLocalValue(String(prop.value));
-            }
-        } else if (prop.type === 'function') {
-            setLocalValue(prop.value ? prop.value.toString() : '() => {}');
+        if (isDerivedPath) {
+             const ctx: any = {
+                 project: { nodes }, // minimal project mock
+                 get: (nid: string, pid: string) => {
+                     const node = nodes[nid];
+                     const p = node?.properties[pid];
+                     if (p) return evaluateProperty(p, currentTime, ctx, 1);
+                     return 0;
+                 }
+             };
+             const val = evaluateProperty(prop, currentTime, ctx, 0, { nodeId, propKey });
+             setLocalValue(String(val));
         } else {
-            setLocalValue(String(prop.value));
+             if (isStatic) {
+                // If we have keyframes, evaluate the interpolated value for display
+                let effectiveValue = prop.value;
+                if (prop.keyframes && prop.keyframes.length > 0) {
+                     effectiveValue = evaluateProperty(prop, currentTime);
+                }
+                
+                const v = effectiveValue;
+
+                if (prop.type === 'object' || prop.type === 'array') {
+                    try { setLocalValue(JSON.stringify(v, null, 2)); } 
+                    catch (e) { setLocalValue(String(v)); }
+                } else if (prop.type === 'function') {
+                    setLocalValue(v ? v.toString() : '() => {}');
+                } else {
+                    if (typeof v === 'number') setLocalValue(Math.abs(v) < 0.0001 && v !== 0 ? '0' : parseFloat(v.toFixed(3)).toString());
+                    else setLocalValue(String(v));
+                }
+                setJsonError(null);
+            }
+            
+            if (isExpression) {
+                setLocalExpression(String(prop.value));
+            }
         }
-        setLocalExpression(prop.expression);
-        setJsonError(null);
-    }
-    if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.includes(':')) {
-        const [nid, pid] = prop.value.split(':');
-        if (nodes[nid]) {
-            setLinkTargetNode(nid);
-            setLinkTargetProp(pid);
+
+        if (isRef && String(prop.value).includes(':')) {
+             const [nid, pid] = String(prop.value).split(':');
+             if (nodes[nid]) {
+                setLinkTargetNode(nid);
+                setLinkTargetProp(pid);
+             }
         }
     }
-  }, [prop.value, prop.expression, prop.mode, nodes, prop.type]); 
+  }, [prop, isStatic, isExpression, isRef, nodes, isDerivedPath, currentTime]); 
 
   const captureSnapshot = () => {
       if (!isEditingRef.current) {
           isEditingRef.current = true;
           if (snapshotRef.current === null) {
               snapshotRef.current = {
-                  mode: prop.mode,
+                  type: prop.type,
                   value: prop.value,
-                  expression: prop.expression
+                  keyframes: prop.keyframes
               };
           }
       }
@@ -78,58 +150,72 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       const state = latestState.current;
       if (!isEditingRef.current) return;
 
-      const oldState = snapshotRef.current ?? { mode: state.prop.mode, value: state.prop.value, expression: state.prop.expression };
+      const oldState = snapshotRef.current ?? { type: state.prop.type, value: state.prop.value, keyframes: state.prop.keyframes };
       
       let newState: Partial<Property> = {};
       let hasChanged = false;
+      let isKeyframeCommit = false;
 
-      if (state.prop.mode === 'static') {
+      // Handle Commits based on current Type in State
+      const currentType = state.prop.type;
+
+      if (currentType === 'expression') {
+          newState = { type: 'expression', value: state.localExpression };
+          hasChanged = state.localExpression !== oldState.value || oldState.type !== 'expression';
+
+      } else if (currentType === 'ref') {
+          newState = { type: 'ref', value: state.prop.value };
+          hasChanged = state.prop.value !== oldState.value || oldState.type !== 'ref';
+      
+      } else {
+          // Static Value
           let val: any = state.localValue;
           
-          if (state.prop.type === 'number') {
+          if (currentType === 'number') {
               const parsed = parseFloat(val);
               val = isNaN(parsed) ? (oldState.value ?? 0) : parsed;
-          } else if (state.prop.type === 'object' || state.prop.type === 'array') {
+          } else if (currentType === 'object' || currentType === 'array') {
               try {
                   val = JSON.parse(state.localValue);
                   setJsonError(null);
               } catch (e) {
-                  // If JSON invalid, allow reverting or just abort
                   setJsonError("Invalid JSON");
                   return; // Abort commit
               }
-          } else if (state.prop.type === 'function') {
-              // Functions cannot be edited in static mode effectively (unsafe eval). 
-              // Just revert to old value if user tried to type here.
-              // Real editing happens in Code mode for functions.
-              val = oldState.value;
+          } else if (currentType === 'boolean') {
+              val = (state.localValue === 'true'); // Simple hack, usually updated via buttons
           }
-
-          newState = { mode: 'static', value: val };
-          // Deep compare for objects? Simplified check here.
-          const valChanged = JSON.stringify(val) !== JSON.stringify(oldState.value);
-          hasChanged = valChanged || oldState.mode !== 'static';
-
-      } else if (state.prop.mode === 'code') {
-          newState = { mode: 'code', expression: state.localExpression };
-          hasChanged = state.localExpression !== oldState.expression || oldState.mode !== 'code';
-
-      } else if (state.prop.mode === 'link') {
-          newState = { mode: 'link', value: state.prop.value };
-          hasChanged = state.prop.value !== oldState.value || oldState.mode !== 'link';
+          
+          const hasKeyframes = state.prop.keyframes && state.prop.keyframes.length > 0;
+          
+          if (hasKeyframes) {
+              isKeyframeCommit = true;
+              newState = { type: currentType, value: val }; 
+              hasChanged = true; 
+          } else {
+              newState = { type: currentType, value: val };
+              const valChanged = JSON.stringify(val) !== JSON.stringify(oldState.value);
+              hasChanged = valChanged || oldState.type !== currentType;
+          }
       }
 
       if (hasChanged) {
-          consoleService.log('info', [`Commit ${state.propKey}`], { nodeId: state.nodeId, propKey: state.propKey });
-          const command = Commands.set(
-              { nodes: state.nodes } as any, 
-              state.nodeId,
-              state.propKey,
-              newState, 
-              oldState, 
-              `Set ${state.prop.name}`
-          );
-          onCommit(command);
+          if (isKeyframeCommit && onToggleKeyframe) {
+              onToggleKeyframe(state.nodeId, state.propKey, newState.value);
+          } else {
+              consoleService.log('info', [`Commit ${state.propKey}`], { nodeId: state.nodeId, propKey: state.propKey });
+              const label = formatLabel(state.propKey);
+              
+              const command = Commands.set(
+                  { nodes: state.nodes } as any, 
+                  state.nodeId,
+                  state.propKey,
+                  newState, 
+                  oldState, 
+                  `Set ${label}`
+              );
+              onCommit(command);
+          }
       }
 
       isEditingRef.current = false;
@@ -147,18 +233,22 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   const handleFocus = () => captureSnapshot();
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      if (isDerivedPath) return; 
+      
       captureSnapshot();
       const val = e.target.value;
       setLocalValue(val);
       
+      let content: any = val;
       if (prop.type === 'number') {
           const num = parseFloat(val);
-          if (!isNaN(num)) onUpdate(nodeId, propKey, { value: num });
-      } else if (prop.type === 'string' || prop.type === 'color') {
-          onUpdate(nodeId, propKey, { value: val });
+          if (!isNaN(num)) content = num;
       }
       
-      // For Object/Array, we check validity but don't live update the engine to avoid partial JSON
+      if (prop.type !== 'object' && prop.type !== 'array') {
+          onUpdate(nodeId, propKey, { type: prop.type, value: content });
+      }
+      
       if (prop.type === 'object' || prop.type === 'array') {
           try {
              JSON.parse(val);
@@ -174,16 +264,17 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   };
 
   const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      if (isDerivedPath) return; 
+
       captureSnapshot();
       const val = e.target.value;
       setLocalExpression(val);
-      onUpdate(nodeId, propKey, { expression: val });
+      onUpdate(nodeId, propKey, { type: 'expression', value: val });
   };
 
   const handleCodeBlur = () => {
       consoleService.stopEditing(nodeId, propKey);
       try {
-          // Syntax check
           new Function('t', 'val', 'ctx', 'console', localExpression);
       } catch (e: any) {
           consoleService.log('error', [e.message], { nodeId, propKey });
@@ -193,53 +284,80 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
-           if (prop.type !== 'object' && prop.type !== 'array' && prop.mode !== 'code' && prop.type !== 'function') {
+           if (prop.type !== 'object' && prop.type !== 'array' && prop.type !== 'expression' && prop.type !== 'function') {
                (e.target as HTMLElement).blur();
                return;
            }
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-           const start = snapshotRef.current;
-           if (start) {
-               e.preventDefault();
-               e.stopPropagation(); 
-               if (prop.mode === 'code') {
-                   setLocalExpression(String(start.expression));
-                   onUpdate(nodeId, propKey, { expression: start.expression });
-               } else {
-                   const valStr = (prop.type === 'object' || prop.type === 'array') ? JSON.stringify(start.value,null,2) : String(start.value);
-                   setLocalValue(valStr);
-                   onUpdate(nodeId, propKey, { value: start.value });
-               }
-           }
-      }
   };
 
-  const handleModeChange = (mode: Property['mode']) => {
-    const oldMode = prop.mode;
-    if (oldMode === mode) return;
-    const oldState = { mode: oldMode, value: prop.value, expression: prop.expression };
-    const newState = { mode: mode };
-    onUpdate(nodeId, propKey, { mode });
-    onCommit(Commands.set({ nodes } as any, nodeId, propKey, newState, oldState, `Change ${prop.name} Mode`));
+  const handleTypeSwitch = (targetType: PropertyType) => {
+    if (prop.type === targetType) return;
+    if (isDerivedPath) return;
+    
+    const oldState = { type: prop.type, value: prop.value, meta: prop.meta };
+    const newMeta = { ...(prop.meta || {}) };
+
+    if (prop.type === 'expression') {
+        newMeta.lastExpression = String(prop.value);
+    } else if (prop.type !== 'ref') {
+        newMeta.lastValue = prop.value;
+        newMeta.lastType = prop.type;
+    }
+
+    let newVal: any = prop.value;
+
+    if (targetType === 'expression') {
+        if (newMeta.lastExpression !== undefined) {
+            newVal = newMeta.lastExpression;
+        } else {
+            const valToWrap = (prop.type !== 'ref' && prop.type !== 'expression') ? prop.value : 0;
+            newVal = `return ${JSON.stringify(valToWrap)};`;
+        }
+    } else if (targetType === 'ref') {
+        newVal = ""; 
+    } else {
+        if (newMeta.lastValue !== undefined && newMeta.lastType === targetType) {
+            newVal = newMeta.lastValue;
+        } else {
+            if (prop.type === 'expression') {
+                 if (targetType === 'number') newVal = 0;
+                 else if (targetType === 'string' || targetType === 'color') newVal = "";
+                 else if (targetType === 'boolean') newVal = false;
+                 else if (targetType === 'object' || targetType === 'array') newVal = targetType === 'array' ? [] : {};
+            } else {
+                 if (targetType === 'number') newVal = Number(prop.value) || 0;
+                 else if (targetType === 'string') newVal = String(prop.value);
+                 else if (targetType === 'boolean') newVal = Boolean(prop.value);
+                 else newVal = prop.value; 
+            }
+        }
+    }
+    
+    const update = { type: targetType, value: newVal, meta: newMeta };
+    
+    onUpdate(nodeId, propKey, update);
+    const label = formatLabel(propKey);
+    onCommit(Commands.set({ nodes } as any, nodeId, propKey, update, oldState, `Change ${label} Type`));
   };
 
   const handleLinkChange = (targetNodeId: string, targetPropId: string) => {
-      const oldState = { mode: prop.mode, value: prop.value };
-      const newVal = `${targetNodeId}:${targetPropId}`;
+      const oldState = { type: prop.type, value: prop.value };
+      const newLink = `${targetNodeId}:${targetPropId}`;
       if (targetNodeId && targetPropId) {
           setLinkTargetNode(targetNodeId);
           setLinkTargetProp(targetPropId);
-          onUpdate(nodeId, propKey, { value: newVal });
-          onCommit(Commands.set({ nodes } as any, nodeId, propKey, { mode: 'link', value: newVal }, oldState, `Link ${prop.name}`));
+          onUpdate(nodeId, propKey, { type: 'ref', value: newLink });
+          const label = formatLabel(propKey);
+          onCommit(Commands.set({ nodes } as any, nodeId, propKey, { type: 'ref', value: newLink }, oldState, `Link ${label}`));
       }
   };
 
   useEffect(() => {
     let isCycle = false;
-    if (prop.mode === 'link' && linkTargetNode && linkTargetProp) {
+    if (prop.type === 'ref' && linkTargetNode && linkTargetProp) {
         if (detectLinkCycle(nodes, nodeId, propKey, linkTargetNode, linkTargetProp)) isCycle = true;
-    } else if (prop.mode === 'code') {
+    } else if (prop.type === 'expression' && localExpression) {
         const regex = /ctx\.get\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)/g;
         let match;
         regex.lastIndex = 0; 
@@ -251,19 +369,18 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
         }
     }
     setCycleDetected(isCycle);
-  }, [linkTargetNode, linkTargetProp, prop.mode, nodeId, propKey, nodes, localExpression]);
+  }, [linkTargetNode, linkTargetProp, prop.type, nodeId, propKey, nodes, localExpression]);
 
   useEffect(() => {
     if (autoFocusTrigger) {
-        if ((prop.mode === 'code' || prop.type === 'object' || prop.type === 'array') && textareaRef.current) {
+        if ((prop.type === 'expression' || prop.type === 'object' || prop.type === 'array') && textareaRef.current && !isDerivedPath) {
             textareaRef.current.focus();
-        } else if (prop.mode === 'static' && inputRef.current) {
+        } else if (isStatic && inputRef.current && !isDerivedPath) {
             inputRef.current.focus();
         }
     }
-  }, [autoFocusTrigger, prop.mode]);
+  }, [autoFocusTrigger, prop.type, isStatic, isDerivedPath]);
 
-  // Determine icon for the type
   const getTypeIcon = () => {
       switch(prop.type) {
           case 'object': return <Braces size={12} />;
@@ -274,30 +391,97 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
           default: return <Hash size={12} />;
       }
   };
+  
+  const getStaticTargetType = (): PropertyType => {
+      if (['fill', 'stroke'].includes(propKey)) return 'color';
+      if (['path'].includes(propKey)) return 'string';
+      return 'number';
+  };
+
+  const label = formatLabel(propKey);
+  const hasKeyframes = prop.keyframes && prop.keyframes.length > 0;
+  
+  // Check if we are ON a keyframe at the current time
+  const onKeyframe = hasKeyframes && prop.keyframes?.some(k => Math.abs(k.time - currentTime) < 0.05);
+
+  const handleToggleKeyframe = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      
+      // If currently an expression, we must convert to static FIRST
+      if (prop.type === 'expression') {
+          const ctx: any = {
+             project: { nodes },
+             get: (nid: string, pid: string) => {
+                 const node = nodes[nid];
+                 const p = node?.properties[pid];
+                 if (p) return evaluateProperty(p, currentTime, ctx, 1);
+                 return 0;
+             }
+         };
+         let val = evaluateProperty(prop, currentTime, ctx);
+         
+         let newType: PropertyType = 'number';
+         if (typeof val === 'string') newType = (val.startsWith('#') || val.startsWith('rgb')) ? 'color' : 'string';
+         else if (typeof val === 'boolean') newType = 'boolean';
+         
+         onUpdate(nodeId, propKey, { type: newType, value: val });
+         if (onToggleKeyframe) onToggleKeyframe(nodeId, propKey, val);
+         return;
+      }
+      
+      if (onToggleKeyframe) onToggleKeyframe(nodeId, propKey, prop.value);
+  };
 
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-center group">
-        <label className="text-xs text-zinc-400 font-medium group-hover:text-zinc-200 transition-colors select-none flex items-center gap-1.5">
-          {prop.name}
-          <span className="text-zinc-600" title={prop.type}>{getTypeIcon()}</span>
+        <label className="text-xs text-zinc-400 font-medium group-hover:text-zinc-200 transition-colors select-none flex items-center gap-1.5 cursor-default flex-1 truncate mr-2">
+            {/* Keyframe Toggle - Now available for all non-derived static props */}
+            {!isDerivedPath && (
+                <button 
+                    onClick={handleToggleKeyframe}
+                    className={`p-1 rounded transition-all flex items-center justify-center hover:bg-zinc-800 ${hasKeyframes ? 'text-blue-400' : 'text-zinc-600 hover:text-zinc-300'}`}
+                    title={hasKeyframes ? "Add/Remove Keyframe at Current Time" : "Enable Animation (Convert to Keyframes)"}
+                >
+                    <Diamond size={10} fill={onKeyframe ? "currentColor" : "none"} strokeWidth={2} />
+                </button>
+            )}
+          
+          <span className="truncate">{label}</span>
+          
+          {isDerivedPath ? <Lock size={10} className="text-zinc-600" /> : <span className="text-zinc-600" title={prop.type}>{getTypeIcon()}</span>}
         </label>
-        <div className="flex bg-zinc-800 rounded p-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
-          <button onClick={() => handleModeChange('static')} className={`p-1 rounded ${prop.mode === 'static' ? 'bg-zinc-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Static Value"><Hash size={12} /></button>
-          <button onClick={() => handleModeChange('keyframe')} className={`p-1 rounded ${prop.mode === 'keyframe' ? 'bg-yellow-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Keyframes"><Key size={12} /></button>
-          <button onClick={() => handleModeChange('link')} className={`p-1 rounded ${prop.mode === 'link' ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Link"><LinkIcon size={12} /></button>
-          <button onClick={() => handleModeChange('code')} className={`p-1 rounded ${prop.mode === 'code' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Code"><Code size={12} /></button>
-        </div>
+        
+        {!isDerivedPath && (
+            <div className="flex bg-zinc-800 rounded p-0.5 opacity-40 group-hover:opacity-100 transition-opacity shrink-0">
+                <button onClick={() => handleTypeSwitch(getStaticTargetType())} className={`p-1 rounded ${isStatic ? 'bg-zinc-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Static Value"><Hash size={12} /></button>
+                <button onClick={() => handleTypeSwitch('ref')} className={`p-1 rounded ${prop.type === 'ref' ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Link"><LinkIcon size={12} /></button>
+                <button onClick={() => handleTypeSwitch('expression')} className={`p-1 rounded ${prop.type === 'expression' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Code"><Code size={12} /></button>
+            </div>
+        )}
       </div>
 
-      {prop.mode === 'static' && (
-        <div className="mt-1">
+      {/* Render Text Area for Derived Paths (Read Only) */}
+      {isDerivedPath && (
+          <div className="mt-1">
+             <textarea 
+                readOnly
+                className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded p-2 text-[10px] text-zinc-500 font-mono focus:outline-none resize-none leading-relaxed h-16 cursor-not-allowed"
+                value={localValue}
+             />
+          </div>
+      )}
+
+      {/* Standard Static Input */}
+      {isStatic && !isDerivedPath && (
+        <div className="mt-1 relative">
           {(prop.type === 'number' || prop.type === 'string') && (
             <input 
               ref={inputRef}
               type="text" 
-              data-undoable="true"
-              className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+              data-undoable={!isDerivedPath}
+              disabled={isDerivedPath}
+              className={`w-full bg-zinc-950 border ${onKeyframe ? 'border-blue-500 text-blue-200' : hasKeyframes ? 'border-blue-900/50 text-blue-200' : 'border-zinc-800 text-white'} rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 font-mono ${isDerivedPath ? 'opacity-50 cursor-not-allowed' : ''}`}
               value={localValue}
               onChange={handleChange}
               onFocus={handleFocus}
@@ -308,14 +492,14 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
            {prop.type === 'boolean' && (
                <div className="flex gap-2">
                    <button 
-                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {value: true}); isEditingRef.current=true; performCommit(); }}
-                    className={`flex-1 py-1 text-xs rounded border ${prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'}`}
+                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {type: 'boolean', value: true}); isEditingRef.current=true; performCommit(); }}
+                    className={`flex-1 py-1 text-xs rounded border ${prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'} ${hasKeyframes ? 'border-blue-900/50' : ''}`}
                    >
                        TRUE
                    </button>
                    <button 
-                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {value: false}); isEditingRef.current=true; performCommit(); }}
-                    className={`flex-1 py-1 text-xs rounded border ${!prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'}`}
+                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {type: 'boolean', value: false}); isEditingRef.current=true; performCommit(); }}
+                    className={`flex-1 py-1 text-xs rounded border ${!prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'} ${hasKeyframes ? 'border-blue-900/50' : ''}`}
                    >
                        FALSE
                    </button>
@@ -328,7 +512,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                         type="color" 
                         data-undoable="true"
                         className="absolute -top-2 -left-2 w-16 h-16 p-0 border-0 cursor-pointer"
-                        value={String(prop.value)}
+                        value={String(prop.value || '#000000')}
                         onChange={handleChange}
                         onClick={captureSnapshot} 
                         onFocus={handleFocus}
@@ -339,7 +523,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                     ref={inputRef}
                     type="text" 
                     data-undoable="true"
-                    className="flex-1 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-white font-mono"
+                    className={`flex-1 bg-zinc-950 border ${hasKeyframes ? 'border-blue-900/50 text-blue-200' : 'border-zinc-800 text-white'} rounded px-2 py-1 text-xs font-mono`}
                     value={localValue}
                     onChange={handleChange}
                     onFocus={handleFocus}
@@ -364,21 +548,10 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                 {jsonError && <div className="absolute top-1 right-2 text-[10px] text-red-500 font-bold">{jsonError}</div>}
               </div>
           )}
-          {prop.type === 'function' && (
-              <div className="p-2 bg-zinc-900 border border-zinc-800 rounded text-zinc-500 text-xs italic text-center">
-                  Functions must be edited in Code Mode.
-              </div>
-          )}
         </div>
       )}
 
-      {prop.mode === 'keyframe' && (
-        <div className="p-2 bg-yellow-900/20 border border-yellow-900/30 rounded text-xs text-yellow-500 text-center">
-          Timeline Driven
-        </div>
-      )}
-
-      {prop.mode === 'link' && (
+      {prop.type === 'ref' && (
           <div className={`space-y-2 p-2 border rounded ${cycleDetected ? 'bg-red-900/10 border-red-900/50' : 'bg-indigo-900/10 border-indigo-900/30'}`}>
               <select 
                 data-undoable="true"
@@ -398,23 +571,24 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
               >
                   <option value="">Select Property...</option>
                   {linkTargetNode && nodes[linkTargetNode] && Object.entries(nodes[linkTargetNode].properties).map(([key, p]) => (
-                      <option key={p.id} value={key}>{p.name}</option>
+                      <option key={key} value={key}>{formatLabel(key)}</option>
                   ))}
               </select>
               {cycleDetected && <div className="text-red-400 text-[10px] text-center font-bold">Cycle Detected</div>}
           </div>
       )}
 
-      {prop.mode === 'code' && (
+      {prop.type === 'expression' && !isDerivedPath && (
         <div className="mt-1 relative space-y-1">
           <textarea 
             ref={textareaRef}
-            data-undoable="true"
-            className={`w-full h-24 bg-zinc-950 border rounded p-2 text-xs font-mono focus:outline-none resize-none leading-relaxed ${cycleDetected ? 'border-red-900/50 text-red-200' : 'border-blue-900/50 text-blue-200 focus:border-blue-500'}`}
+            data-undoable={!isDerivedPath}
+            disabled={isDerivedPath}
+            className={`w-full h-24 bg-zinc-950 border rounded p-2 text-xs font-mono focus:outline-none resize-none leading-relaxed ${cycleDetected ? 'border-red-900/50 text-red-200' : 'border-blue-900/50 text-blue-200 focus:border-blue-500'} ${isDerivedPath ? 'opacity-60 cursor-not-allowed text-zinc-400' : ''}`}
             spellCheck={false}
             value={localExpression}
             onChange={handleCodeChange}
-            onFocus={() => { consoleService.startEditing(nodeId, propKey); handleFocus(); }}
+            onFocus={() => { if(!isDerivedPath) { consoleService.startEditing(nodeId, propKey); handleFocus(); }}}
             onBlur={handleCodeBlur}
             onKeyDown={handleInputKeyDown}
           />

@@ -1,4 +1,6 @@
-import { Command, ProjectState, Node, Property } from '../types';
+
+
+import { Command, ProjectState, Node, Property, Keyframe } from '../types';
 import { createNode } from './factory';
 
 // Helper to extract function body
@@ -129,16 +131,20 @@ export const Commands = {
                 const prop = n.properties[pKey];
                 
                 // Update Links
-                if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.startsWith(fId + ':')) {
-                    const [, suffix] = prop.value.split(':');
-                    newProps[pKey] = { ...prop, value: `${tId}:${suffix}` };
-                    propsUpdated = true;
+                if (prop.type === 'ref') {
+                    const linkVal = String(prop.value);
+                    if (linkVal.startsWith(fId + ':')) {
+                        const [, suffix] = linkVal.split(':');
+                        newProps[pKey] = { ...prop, value: `${tId}:${suffix}` };
+                        propsUpdated = true;
+                    }
                 }
                 
                 // Update Code References (ctx.get)
-                if (prop.mode === 'code') {
+                if (prop.type === 'expression') {
+                    const expression = String(prop.value);
                     const regex = new RegExp(`ctx\\.get\\(['"]${fId}['"]`, 'g');
-                    let newExpr = prop.expression;
+                    let newExpr = expression;
                     
                     if (regex.test(newExpr)) {
                         newExpr = newExpr.replace(regex, `ctx.get('${tId}'`);
@@ -146,7 +152,6 @@ export const Commands = {
                     }
                     
                     // Update Variable References (e.g. "return MY_VAR")
-                    // Use word boundaries to avoid replacing partial matches
                     const varRegex = new RegExp(`\\b${fId}\\b`, 'g');
                     if (varRegex.test(newExpr)) {
                          newExpr = newExpr.replace(varRegex, tId);
@@ -154,7 +159,7 @@ export const Commands = {
                     }
 
                     if (propsUpdated) {
-                        newProps[pKey] = { ...prop, expression: newExpr };
+                        newProps[pKey] = { ...prop, value: newExpr };
                     }
                 }
             });
@@ -187,18 +192,27 @@ export const Commands = {
       const applyMove = (s: ProjectState, pos: {x:number, y:number}) => {
           const node = s.nodes[nodeId];
           if (!node) return s;
-          const nextNodes = {
-              ...s.nodes,
-              [nodeId]: {
-                  ...node,
-                  properties: {
-                      ...node.properties,
-                      x: { ...node.properties.x, value: pos.x },
-                      y: { ...node.properties.y, value: pos.y }
+          
+          const propX = node.properties.x;
+          const propY = node.properties.y;
+
+          const newX = { ...propX, type: 'number' as const, value: pos.x };
+          const newY = { ...propY, type: 'number' as const, value: pos.y };
+
+          return {
+              ...s,
+              nodes: {
+                  ...s.nodes,
+                  [nodeId]: {
+                      ...node,
+                      properties: {
+                          ...node.properties,
+                          x: newX,
+                          y: newY
+                      }
                   }
               }
           };
-          return { ...s, nodes: nextNodes };
       };
       return {
           id: crypto.randomUUID(),
@@ -223,7 +237,7 @@ export const Commands = {
           redo: (s) => applyReorder(s, fromIndex, toIndex)
       };
   },
-  // Unified Property Set Command (Handles all modes)
+  // Unified Property Set Command
   set: (
     project: ProjectState, 
     nodeId: string, 
@@ -237,14 +251,11 @@ export const Commands = {
       const currentProp = node.properties[propKey];
       
       const prev = oldValue || { 
-          mode: currentProp.mode, 
-          value: currentProp.value, 
-          expression: currentProp.expression,
-          keyframes: currentProp.keyframes
+          type: currentProp.type,
+          value: currentProp.value,
+          keyframes: currentProp.keyframes // Preserve keyframes if unspecified in oldValue
       };
 
-      // Safeguard against functions being passed directly to logic that expects serializable data
-      // (Though redo/undo function closures handle refs fine in memory)
       const next = { ...prev, ...newValue };
       
       const apply = (s: ProjectState, val: Partial<Property>) => {

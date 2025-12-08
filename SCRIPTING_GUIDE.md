@@ -1,5 +1,3 @@
-
-
 # AnimNode Scripting API Reference
 
 此文档定义了 AnimNode 脚本系统的编程接口。AI 模型在生成脚本时应严格遵守此规范。
@@ -108,6 +106,7 @@ for(let i = 0; i < count; i++) {
 | `height` | `number` | 100 | 高度。 |
 | `stroke` | `color` | `transparent` | 描边颜色。 |
 | `strokeWidth` | `number` | 0 | 描边宽度。 |
+| `path` | `string` | (Computed) | 只读。根据宽高自动计算的 SVG Path。 |
 
 **Type: 'circle'**
 | 属性名 | 类型 | 默认值 | 描述 |
@@ -115,11 +114,12 @@ for(let i = 0; i < count; i++) {
 | `radius` | `number` | 50 | 半径。 |
 | `stroke` | `color` | `transparent` | 描边颜色。 |
 | `strokeWidth` | `number` | 0 | 描边宽度。 |
+| `path` | `string` | (Computed) | 只读。根据半径自动计算的 SVG Path。 |
 
 **Type: 'vector'**
 | 属性名 | 类型 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- |
-| `d` | `string` | `""` | SVG Path Data 字符串 (e.g. "M 0 0 L 10 10 Z")。 |
+| `path` | `string` | `""` | SVG Path Data 字符串 (e.g. "M 0 0 L 10 10 Z")。 |
 | `stroke` | `color` | `none` | 描边颜色。 |
 | `strokeWidth`| `number` | 0 | 描边宽度。 |
 

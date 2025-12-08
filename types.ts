@@ -2,23 +2,45 @@
 
 // This defines the "File Format" structure
 
-export type ValueType = 'number' | 'color' | 'vector2' | 'boolean' | 'string' | 'object' | 'array' | 'function';
+// Expanded types to include logic and structural types
+export type PropertyType = 
+  | 'number' 
+  | 'color' 
+  | 'vector2' 
+  | 'boolean' 
+  | 'string' 
+  | 'object' 
+  | 'array' 
+  | 'function' 
+  | 'expression' 
+  | 'ref'; // Formerly 'link'
+
+export type EasingType = 'linear' | 'step';
 
 export interface Keyframe {
-  time: number; // in seconds
+  id: string;
+  time: number;
   value: any;
-  easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
+  easing: EasingType;
 }
 
-// The core concept: A property can be static, keyframed, procedural (code), or linked
+// The core concept: A flattened property structure
 export interface Property {
-  id: string;
-  name: string;
-  type: ValueType;
-  mode: 'static' | 'keyframe' | 'code' | 'link';
-  value: any; // Static value OR "nodeId:propKey" string for link
-  keyframes: Keyframe[];
-  expression: string; // The JS code body: (t, index, ctx) => result
+  type: PropertyType;
+  value: any; 
+  // For 'expression', value is the code string
+  // For 'ref', value is "nodeId:propKey"
+  // For 'number', value is number, etc.
+  
+  // Animation Data
+  keyframes?: Keyframe[];
+
+  // Stash for preserving values between mode switches
+  meta?: {
+    lastExpression?: string;
+    lastValue?: any;
+    lastType?: PropertyType;
+  };
 }
 
 export interface Node {

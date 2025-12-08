@@ -1,7 +1,5 @@
-
-
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { ProjectState, Property, ToolType, Command } from '../types';
+import { ProjectState, Property, ToolType, Command, Keyframe } from '../types';
 import { INITIAL_PROJECT } from '../constants';
 import { audioController } from '../services/audio';
 import { Commands } from '../services/commands';
@@ -28,316 +26,328 @@ export function useProject() {
   }, [project]);
   
   useEffect(() => {
-    historyRef.current = history;
+      historyRef.current = history;
   }, [history]);
 
-  // --- HISTORY ACTIONS ---
+  // --- PLAYBACK LOOP ---
+  useEffect(() => {
+      let rAF: number;
+      
+      const loop = (timestamp: number) => {
+          if (projectRef.current.meta.isPlaying) {
+              const { startWallTime, startProjectTime } = timeAnchorRef.current;
+              // Calculate delta in seconds
+              const deltaSeconds = (timestamp - startWallTime) / 1000;
+              let newTime = startProjectTime + deltaSeconds;
+              
+              if (newTime >= projectRef.current.meta.duration) {
+                  newTime = 0;
+                  // Loop
+                  timeAnchorRef.current = { startWallTime: timestamp, startProjectTime: 0 };
+              }
+              
+              setProject(prev => ({
+                  ...prev,
+                  meta: { ...prev.meta, currentTime: newTime }
+              }));
+          }
+          rAF = requestAnimationFrame(loop);
+      };
+      rAF = requestAnimationFrame(loop);
+      
+      return () => cancelAnimationFrame(rAF);
+  }, []);
 
-  const commit = useCallback((command: Command) => {
+  const setTime = useCallback((t: number) => {
+      // Clamp time
+      const time = Math.max(0, Math.min(t, projectRef.current.meta.duration));
+      
+      setProject(prev => {
+          // If playing, we need to reset the anchor so playback continues smoothly from the NEW time
+          if (prev.meta.isPlaying) {
+             timeAnchorRef.current = { startWallTime: performance.now(), startProjectTime: time };
+          }
+          return {
+            ...prev,
+            meta: { ...prev.meta, currentTime: time }
+          };
+      });
+  }, []);
+
+  const togglePlay = useCallback(() => {
+      setProject(prev => {
+          const willPlay = !prev.meta.isPlaying;
+          if (willPlay) {
+              // Starting playback
+              timeAnchorRef.current = { startWallTime: performance.now(), startProjectTime: prev.meta.currentTime };
+              if (prev.audio.hasAudio) {
+                  audioController.play(prev.meta.currentTime);
+              }
+          } else {
+              // Stopping playback
+              if (prev.audio.hasAudio) {
+                  audioController.stop();
+              }
+          }
+          return {
+              ...prev,
+              meta: { ...prev.meta, isPlaying: willPlay }
+          };
+      });
+  }, []);
+
+  // --- HISTORY MANAGEMENT ---
+
+  const commit = useCallback((cmd: Command) => {
       setHistory(prev => {
-          // Limit history size to 50 steps
-          const newPast = [...prev.past, command];
+          // Limit history size to 50
+          const newPast = [...prev.past, cmd];
           if (newPast.length > 50) newPast.shift();
           return {
               past: newPast,
-              future: [] // Clear redo stack on new action
+              future: []
           };
       });
+      // Apply immediate state change
+      setProject(prev => cmd.redo(prev));
   }, []);
 
   const undo = useCallback(() => {
       const { past, future } = historyRef.current;
       if (past.length === 0) return;
-
-      const command = past[past.length - 1];
+      
+      const cmd = past[past.length - 1];
       const newPast = past.slice(0, -1);
-      const newFuture = [command, ...future];
-
+      const newFuture = [cmd, ...future];
+      
       setHistory({ past: newPast, future: newFuture });
-
-      // Apply Undo Logic
-      setProject(current => {
-          const next = command.undo(current);
-          projectRef.current = next;
-          return next;
-      });
+      setProject(prev => cmd.undo(prev));
   }, []);
 
   const redo = useCallback(() => {
       const { past, future } = historyRef.current;
       if (future.length === 0) return;
-
-      const command = future[0];
+      
+      const cmd = future[0];
       const newFuture = future.slice(1);
-      const newPast = [...past, command];
-
+      const newPast = [...past, cmd];
+      
       setHistory({ past: newPast, future: newFuture });
-
-      // Apply Redo Logic
-      setProject(current => {
-          const next = command.redo(current);
-          projectRef.current = next;
-          return next;
-      });
+      setProject(prev => cmd.redo(prev));
   }, []);
 
   const jumpToHistory = useCallback((index: number) => {
-     // Jump to specific state in the past
-     const { past } = historyRef.current;
-     if (index < 0 || index >= past.length) return;
-     
-     const stepsToUndo = past.length - 1 - index;
-     if (stepsToUndo <= 0) return;
+      const { past, future } = historyRef.current;
+      // Index is target index in 'past'
+      // If index < current past length, we undo
+      // If index > current past length, we redo (implied)
+      
+      // Simpler: Reconstruct state from scratch or diff? 
+      // We will just undo/redo sequentially until we match.
+      
+      let currentPast = [...past];
+      let currentFuture = [...future];
+      let currentState = projectRef.current;
 
-     let tempState = projectRef.current;
-     const newFuture = [...historyRef.current.future];
-     const newPast = [...past];
+      // Current "head" is at past.length - 1
+      const currentIndex = currentPast.length - 1;
 
-     for(let i=0; i<stepsToUndo; i++) {
-         const cmd = newPast.pop();
-         if (cmd) {
-             tempState = cmd.undo(tempState);
-             newFuture.unshift(cmd);
-         }
-     }
-     
-     setHistory({ past: newPast, future: newFuture });
-     setProject(tempState);
-     projectRef.current = tempState;
-  }, []);
+      if (index === currentIndex) return;
 
-  // --- PROJECT MUTATIONS ---
-
-  // Helper to force update specific metadata without side-effects (No History)
-  const updateMeta = useCallback((updates: Partial<ProjectState['meta']>) => {
-     setProject(p => {
-        const next = { ...p, meta: { ...p.meta, ...updates } };
-        projectRef.current = next;
-        return next;
-     });
-  }, []);
-
-  // Real-time update (No History Commit - interactions usually commit on end)
-  const updateProperty = useCallback((nodeId: string, propId: string, updates: Partial<Property>) => {
-    const current = projectRef.current;
-    const node = current.nodes[nodeId];
-    if (!node) return;
-    
-    const prop = node.properties[propId];
-    if (!prop) return;
-
-    const nextNodes = {
-      ...current.nodes,
-      [nodeId]: {
-        ...node,
-        properties: {
-          ...node.properties,
-          [propId]: { ...prop, ...updates }
-        }
+      if (index < currentIndex) {
+          // Undo backwards
+          const count = currentIndex - index;
+          for(let i=0; i<count; i++) {
+              const cmd = currentPast.pop();
+              if (cmd) {
+                  currentFuture.unshift(cmd);
+                  currentState = cmd.undo(currentState);
+              }
+          }
+      } else {
+          // This path logic only works if we show future in the list too. 
+          // But usually 'jump' implies jumping to a past state.
+          // For now, only support jumping BACK to a state.
       }
-    };
 
-    const nextProject = { ...current, nodes: nextNodes };
-    projectRef.current = nextProject;
-    setProject(nextProject);
+      setHistory({ past: currentPast, future: currentFuture });
+      setProject(currentState);
   }, []);
 
-  // Atomic Action: Add Node
-  const addNode = useCallback((type: 'rect' | 'circle' | 'vector' | 'value') => {
-    const { command, nodeId } = Commands.addNode(type, projectRef.current);
-    
-    commit(command);
+  // --- PROJECT ACTIONS ---
 
-    setProject(p => {
-        const next = command.redo(p);
-        projectRef.current = next;
-        return next;
-    });
+  const updateProperty = useCallback((nodeId: string, propKey: string, updates: Partial<Property>) => {
+      setProject(prev => {
+          const node = prev.nodes[nodeId];
+          if (!node) return prev;
+          const prop = node.properties[propKey];
+          
+          let newProp = { ...prop, ...updates };
+          
+          // --- AUTO-KEY LOGIC (Live Preview) ---
+          // If we are dragging a value (live update) and the property has keyframes enabled,
+          // we want to update the keyframe at the current time to reflect the drag immediately.
+          // This avoids the UI "snapping back" to the interpolated value during drag.
+          if (prop.keyframes && prop.keyframes.length > 0 && 'value' in updates) {
+              const t = prev.meta.currentTime;
+              const EPSILON = 0.05; // 50ms tolerance for auto-key snapping
+              
+              // Try to find a keyframe at current time
+              const kfIndex = prop.keyframes.findIndex(k => Math.abs(k.time - t) < EPSILON);
+              
+              let newKeyframes = [...prop.keyframes];
+              if (kfIndex >= 0) {
+                  // Update existing
+                  newKeyframes[kfIndex] = { ...newKeyframes[kfIndex], value: updates.value };
+              } else {
+                  // Auto-Key logic: If moving a keyframed prop at a new time, we generally wait for explicit add.
+                  // However, for UX 'feel', dragging usually only updates IF a keyframe exists or if in "Auto Key" mode.
+                  // For now, we only update if keyframe exists to prevent accidental spam.
+              }
+              newProp.keyframes = newKeyframes;
+          }
 
-    return nodeId;
-  }, [commit]);
-
-  // Atomic Action: Remove Node
-  const removeNode = useCallback((nodeId: string) => {
-    // Only attempt remove if node exists
-    if (!projectRef.current.nodes[nodeId]) return;
-
-    const command = Commands.removeNode(nodeId, projectRef.current);
-    
-    commit(command);
-
-    setProject(p => {
-        const next = command.redo(p);
-        projectRef.current = next;
-        return next;
-    });
-  }, [commit]);
-
-  // Atomic Action: Rename Node
-  const renameNode = useCallback((oldId: string, newId: string) => {
-    const command = Commands.renameNode(oldId, newId, projectRef.current);
-    if (!command) return; // Fail validation
-
-    commit(command);
-
-    setProject(p => {
-        const next = command.redo(p);
-        projectRef.current = next;
-        return next;
-    });
-  }, [commit]);
-
-  // Atomic Action: Move Node (Reorder)
-  const moveNode = useCallback((fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex) return;
-    
-    const command = Commands.reorderNode(fromIndex, toIndex);
-    
-    commit(command);
-
-    setProject(p => {
-        const next = command.redo(p);
-        projectRef.current = next;
-        return next;
-    });
-  }, [commit]);
-
-  // --- SCRIPT EXECUTION ---
-  
-  const runScript = useCallback((code: string) => {
-    // Batch Collector
-    const batch: Command[] = [];
-    
-    // Mutable reference to state during script execution (avoiding re-renders)
-    let tempState = projectRef.current;
-    
-    // Interceptor to capture commands generated by the script
-    const scriptCommit = (cmd: Command) => {
-        batch.push(cmd);
-        // Apply the command immediately to the temp state so the next line in the script sees the update
-        tempState = cmd.redo(tempState);
-        // Important: Update the ref so 'projectGetter' inside the script sees the latest state
-        projectRef.current = tempState; 
-    };
-
-    // Provide a getter that always returns the latest tempState
-    const projectGetter = () => tempState;
-
-    try {
-        consoleService.log('info', [`> Running Script...`]);
-        executeScript(code, projectGetter, scriptCommit, consoleService);
-        
-        // If commands were generated, commit them as a single batch
-        if (batch.length > 0) {
-            const batchCmd = Commands.batch(batch, 'Run Script');
-            
-            // 1. Update Real React State (One Render)
-            setProject(tempState);
-            
-            // 2. Commit to History
-            commit(batchCmd);
-            
-            consoleService.log('info', [`Script executed. ${batch.length} operations committed.`]);
-        } else {
-            consoleService.log('info', [`Script executed (No changes made).`]);
-        }
-    } catch(e: any) {
-        consoleService.log('error', [`Script Execution Failed: ${e.message}`]);
-        // Revert ref if failed (React state is still safe)
-        projectRef.current = project; 
-    }
-  }, [commit, project]);
-
-  const selectNode = useCallback((id: string | null) => {
-    setProject(p => {
-        const next = { ...p, selection: id };
-        projectRef.current = next;
-        return next;
-    });
-  }, []);
-
-  const togglePlay = useCallback(() => {
-    setProject(p => {
-        const isPlaying = !p.meta.isPlaying;
-        if (isPlaying) {
-             // START PLAYBACK
-             // We anchor the time logic: "At this wall clock time, the project was at this frame."
-             timeAnchorRef.current = {
-                 startWallTime: performance.now(),
-                 startProjectTime: p.meta.currentTime
-             };
-             audioController.play(p.meta.currentTime);
-        } else {
-             audioController.stop();
-        }
-        const next = { ...p, meta: { ...p.meta, isPlaying } };
-        projectRef.current = next;
-        return next;
-    });
-  }, []);
-
-  const setTime = useCallback((time: number) => {
-    audioController.stop(); 
-    setProject(p => {
-        const next = { ...p, meta: { ...p.meta, currentTime: time, isPlaying: false } };
-        projectRef.current = next;
-        return next;
-    });
-  }, []);
-  
-  const setTool = useCallback((tool: ToolType) => {
-      setProject(p => {
-          const next = { ...p, meta: { ...p.meta, activeTool: tool } };
-          projectRef.current = next;
-          return next;
+          return {
+              ...prev,
+              nodes: {
+                  ...prev.nodes,
+                  [nodeId]: {
+                      ...node,
+                      properties: {
+                          ...node.properties,
+                          [propKey]: newProp
+                      }
+                  }
+              }
+          };
       });
   }, []);
 
-  // Animation Loop
-  // Uses absolute time differencing to prevent drift/jitter
-  useEffect(() => {
-    let frameId = 0;
-
-    const loop = () => {
-      const current = projectRef.current;
+  const addKeyframe = useCallback((nodeId: string, propKey: string, value: any) => {
+      const state = projectRef.current;
+      const node = state.nodes[nodeId];
+      if (!node) return;
+      const prop = node.properties[propKey];
+      const t = state.meta.currentTime;
       
-      if (current.meta.isPlaying) {
-        const now = performance.now();
-        const duration = current.meta.duration;
-        
-        // Calculate elapsed time since play started
-        const elapsed = (now - timeAnchorRef.current.startWallTime) / 1000;
-        
-        // Calculate new time based on start anchor + elapsed
-        let nextTime = timeAnchorRef.current.startProjectTime + elapsed;
+      const newKeyframe: Keyframe = {
+          id: crypto.randomUUID(),
+          time: t,
+          value: value,
+          easing: 'linear'
+      };
 
-        // Loop Logic
-        if (nextTime >= duration) {
-            nextTime = nextTime % duration;
-            // Re-anchor to prevent floating point precision loss over long sessions
-            // and ensure clean looping behavior
-            timeAnchorRef.current = {
-                startWallTime: now,
-                startProjectTime: nextTime
-            };
-            audioController.play(nextTime);
-        }
+      const oldKeyframes = prop.keyframes || [];
+      
+      // Check for existing keyframe at time T
+      const existingIndex = oldKeyframes.findIndex(k => Math.abs(k.time - t) < 0.01);
+      
+      let newKeyframes = [...oldKeyframes];
+      let label = "Add Keyframe";
 
-        const nextProject = {
-          ...current,
-          meta: { ...current.meta, currentTime: nextTime }
-        };
-
-        projectRef.current = nextProject;
-        setProject(nextProject);
+      if (existingIndex >= 0) {
+          // Toggle/Remove logic could go here if triggered by same value
+          // But 'addKeyframe' usually means 'set keyframe'.
+          // We will use this as a 'Set/Update' action.
+          newKeyframes[existingIndex] = { ...newKeyframes[existingIndex], value: value };
+          label = "Update Keyframe";
+      } else {
+          // Insert and Sort
+          newKeyframes.push(newKeyframe);
+          newKeyframes.sort((a, b) => a.time - b.time);
       }
 
-      frameId = requestAnimationFrame(loop);
-    };
+      const update = { keyframes: newKeyframes, value: value }; // Update base value too
+      
+      // Use standard set command
+      commit(Commands.set(state, nodeId, propKey, update, undefined, label));
+  }, [commit]);
 
-    frameId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(frameId);
+  // Special helper to snapshot multiple properties at once (e.g. for Timeline "Diamond" button)
+  const addKeyframeToNode = useCallback((nodeId: string) => {
+      const state = projectRef.current;
+      const node = state.nodes[nodeId];
+      if (!node) return;
+      
+      const t = state.meta.currentTime;
+      const propsToKey = ['x', 'y', 'rotation', 'scale', 'opacity'];
+      
+      const cmds: Command[] = [];
+
+      propsToKey.forEach(key => {
+          const prop = node.properties[key];
+          if (!prop) return;
+
+          // If it's an expression/ref, we skip or bake? 
+          // For now, only simple types.
+          if (prop.type !== 'number' && prop.type !== 'color') return;
+
+          const val = prop.value;
+          const newKeyframe: Keyframe = {
+              id: crypto.randomUUID(),
+              time: t,
+              value: val,
+              easing: 'linear'
+          };
+
+          const oldKeyframes = prop.keyframes || [];
+          const existingIndex = oldKeyframes.findIndex(k => Math.abs(k.time - t) < 0.01);
+          let newKeyframes = [...oldKeyframes];
+          
+          if (existingIndex >= 0) {
+             newKeyframes[existingIndex] = { ...newKeyframes[existingIndex], value: val };
+          } else {
+             newKeyframes.push(newKeyframe);
+             newKeyframes.sort((a, b) => a.time - b.time);
+          }
+          
+          const update = { keyframes: newKeyframes, value: val };
+          cmds.push(Commands.set(state, nodeId, key, update, undefined, `Key ${key}`));
+      });
+      
+      if (cmds.length > 0) {
+          commit(Commands.batch(cmds, `Add Keyframe ${nodeId}`));
+      }
+  }, [commit]);
+
+  const updateMeta = useCallback((updates: Partial<ProjectState['meta']>) => {
+      setProject(prev => ({
+          ...prev,
+          meta: { ...prev.meta, ...updates }
+      }));
   }, []);
+
+  const addNode = useCallback((type: 'rect' | 'circle' | 'vector' | 'value') => {
+      const { command, nodeId } = Commands.addNode(type, projectRef.current);
+      commit(command);
+      return nodeId;
+  }, [commit]);
+
+  const removeNode = useCallback((id: string) => {
+      const cmd = Commands.removeNode(id, projectRef.current);
+      commit(cmd);
+  }, [commit]);
+
+  const renameNode = useCallback((oldId: string, newId: string) => {
+      const cmd = Commands.renameNode(oldId, newId, projectRef.current);
+      if (cmd) commit(cmd);
+  }, [commit]);
+
+  const selectNode = useCallback((id: string | null) => {
+      setProject(prev => ({ ...prev, selection: id }));
+  }, []);
+
+  const moveNode = useCallback((fromIndex: number, toIndex: number) => {
+      commit(Commands.reorderNode(fromIndex, toIndex));
+  }, [commit]);
+
+  const setTool = useCallback((tool: ToolType) => {
+      setProject(prev => ({ ...prev, meta: { ...prev.meta, activeTool: tool } }));
+  }, []);
+
+  const runScript = useCallback((code: string) => {
+      executeScript(code, () => projectRef.current, commit, consoleService);
+  }, [commit]);
 
   return {
     project,
@@ -357,6 +367,8 @@ export function useProject() {
     togglePlay,
     setTime,
     setTool,
-    runScript
+    runScript,
+    addKeyframe,
+    addKeyframeToNode // Exported
   };
 }

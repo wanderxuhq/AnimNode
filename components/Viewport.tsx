@@ -43,12 +43,11 @@ function transformPointToLocal(
 }
 
 // Helper: Create Evaluation Context
-// Ensures interactions and gizmos can resolve linked properties (ctx.get)
 const createEvalContext = (project: ProjectState) => {
     const audioData = audioController.getAudioData();
     const ctx: any = { 
         audio: audioData || {},
-        project: project, // Inject project for global variable lookup
+        project: project, 
         get: (nodeId: string, propKey: string, depth: number = 0) => {
             const node = project.nodes[nodeId];
             if (!node) return 0;
@@ -60,7 +59,6 @@ const createEvalContext = (project: ProjectState) => {
 };
 
 export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpdate, onCommit, selection, onAddNode }) => {
-  // Separate refs for different contexts to avoid getContext conflicts
   const canvasWebGpuRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -73,14 +71,12 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   const [realFps, setRealFps] = useState(0);
   const [instanceCount, setInstanceCount] = useState(0);
   
-  // Interaction State - SELECT TOOL
+  // Interaction State
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  
-  // History Tracking for Drag
   const [dragStartSnapshot, setDragStartSnapshot] = useState<{ id: string, x: number, y: number } | null>(null);
   
-  // Interaction State - PEN TOOL & VECTOR EDITING
+  // Pen Tool
   const [pathPoints, setPathPoints] = useState<PathPoint[]>([]);
   const [isPathClosed, setIsPathClosed] = useState(false);
   const [editingPathId, setEditingPathId] = useState<string | null>(null);
@@ -88,19 +84,14 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   const [dragHandleType, setDragHandleType] = useState<'none' | 'in' | 'out'>('none');
   const [penDragStart, setPenDragStart] = useState<{x:number, y:number} | null>(null);
   const [hoverStartPoint, setHoverStartPoint] = useState(false); 
+  const [vectorStartSnapshot, setVectorStartSnapshot] = useState<{ id: string, path: string } | null>(null);
 
-  // History Tracking for Vector
-  const [vectorStartSnapshot, setVectorStartSnapshot] = useState<{ id: string, d: string } | null>(null);
-
-  // Force re-render for Gizmo updates
   const [tick, setTick] = useState(0); 
 
-  // Sync internal mode state & Init WebGPU
   useEffect(() => {
     const newMode = projectRef.current.meta.renderer;
     setRendererMode(newMode);
     
-    // Initialize WebGPU if selected and not ready
     if (newMode === 'webgpu' && !gpuReady && canvasWebGpuRef.current) {
         webgpuRenderer.init(canvasWebGpuRef.current).then((success) => {
             if(success) {
@@ -113,13 +104,17 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
     }
   }, [projectRef.current.meta.renderer]);
 
-  // Sync Path Points from Node when selection changes
   useEffect(() => {
       if (selection) {
           const node = projectRef.current.nodes[selection];
           if (node && node.type === 'vector') {
               setEditingPathId(selection);
-              const d = node.properties.d.value as string;
+              // Safe access via evaluateProperty for initial display?
+              // Actually we need the raw value to edit points.
+              // If expression mode, this might be tricky. Pen tool usually forces static path value.
+              const dProp = node.properties.path;
+              const d = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, 0) as string);
+              
               const { points, closed } = svgPathToPoints(d);
               setPathPoints(points);
               setIsPathClosed(closed);
@@ -127,7 +122,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           }
       }
       
-      // Clear if deselected or not a vector
       if (!selection || (projectRef.current.nodes[selection]?.type !== 'vector')) {
         setEditingPathId(null);
         setPathPoints([]);
@@ -136,8 +130,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
   }, [selection]); 
 
-
-  // Render Loop (The Scheduler)
+  // Render Loop
   useEffect(() => {
     let frameCount = 0;
     let lastTime = performance.now();
@@ -158,8 +151,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
       if (project.meta.renderer === 'webgpu' && gpuReady && canvasWebGpuRef.current) {
           const nodes = project.rootNodeIds;
-          
-          // Count only renderable nodes for WebGPU allocation
           let renderableCount = 0;
           for(const id of nodes) {
               const node = project.nodes[id];
@@ -185,7 +176,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           for(const id of nodes) {
               const node = project.nodes[id];
               if(!node) continue;
-              if(node.type === 'value') continue; // Skip variables in WebGPU render
+              if(node.type === 'value') continue; 
               
               const v = (key: string, def: any) => 
                   evaluateProperty(node.properties[key], project.meta.currentTime, evalContext, 0, {nodeId: id, propKey: key}) ?? def;
@@ -197,7 +188,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               const opacity = Number(v('opacity', 1));
               
               let w = 100, h = 100, type = 0, color = [1,1,1,1];
-              
               const fillHex = String(v('fill', '#ffffff'));
               const rgb = hexToRgb(fillHex);
               color = [rgb[0], rgb[1], rgb[2], opacity];
@@ -252,18 +242,12 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
     };
   }, [gpuReady]);
 
-  // --- INTERACTION LOGIC ---
-
   const getMouseWorldPos = (e: React.MouseEvent) => {
       if (!containerRef.current) return { x: 0, y: 0 };
       const rect = containerRef.current.getBoundingClientRect();
       const clientX = e.clientX - rect.left;
       const clientY = e.clientY - rect.top;
-      // Coordinate System: 0,0 is Top-Left. No offset.
-      return {
-          x: clientX,
-          y: clientY
-      };
+      return { x: clientX, y: clientY };
   };
 
   const hitTestPathPoints = (wx: number, wy: number, node: Node, points: PathPoint[]) => {
@@ -303,29 +287,30 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       return { hitIndex, handleType, lx, ly };
   };
 
-  // --- PEN TOOL HANDLERS ---
   const handlePenDown = (e: React.MouseEvent, wx: number, wy: number) => {
       if (!editingPathId) {
           const newId = onAddNode('vector');
           
-          const newPoint: PathPoint = { x: wx, y: wy, inX: 0, inY: 0, outX: 0, outY: 0, cmd: 'M' };
+          // Move node to mouse position (Start Origin)
+          onUpdate(newId, 'x', { type: 'number', value: wx });
+          onUpdate(newId, 'y', { type: 'number', value: wy });
+
+          // Start Path at Local 0,0
+          const newPoint: PathPoint = { x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0, cmd: 'M' };
           const newPoints = [newPoint];
           const d = pointsToSvgPath(newPoints, false);
 
-          onUpdate(newId, 'd', { value: d });
+          // Force 'string' mode when drawing
+          onUpdate(newId, 'path', { type: 'string', value: d });
 
           setEditingPathId(newId);
           setPathPoints(newPoints);
           setIsPathClosed(false);
           setDragPointIndex(0);
           setDragHandleType('out'); 
-          setPenDragStart({ x: wx, y: wy });
+          setPenDragStart({ x: 0, y: 0 });
           
-          // No need to snapshot here since creation is already tracked by addNode history
-          // But subsequents edits need tracking. 
-          // For now, let's just track edits on existing paths.
-          setVectorStartSnapshot({ id: newId, d: d });
-
+          setVectorStartSnapshot({ id: newId, path: d });
           onSelect(newId); 
           return;
       }
@@ -334,8 +319,11 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const node = project.nodes[editingPathId];
       if (!node) return; 
 
-      // Snapshot for existing path modification
-      setVectorStartSnapshot({ id: editingPathId, d: node.properties.d.value as string });
+      // Retrieve current D. Use evaluated if linked/expression, but really Pen works best on static values.
+      const dProp = node.properties.path;
+      const currentD = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, 0) as string);
+      
+      setVectorStartSnapshot({ id: editingPathId, path: currentD });
 
       const { hitIndex, handleType, lx, ly } = hitTestPathPoints(wx, wy, node, pathPoints);
 
@@ -343,7 +331,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           if (handleType === 'none' && hitIndex === 0 && pathPoints.length > 2) {
               const newPoints = [...pathPoints];
               const d = pointsToSvgPath(newPoints, true); 
-              onUpdate(editingPathId, 'd', { value: d });
+              onUpdate(editingPathId, 'path', { type: 'string', value: d });
               setPathPoints(svgPathToPoints(d).points); 
               setIsPathClosed(true); 
               return;
@@ -360,7 +348,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           setDragHandleType('out');
           setPenDragStart({ x: lx, y: ly });
           const d = pointsToSvgPath(newPoints, isPathClosed);
-          onUpdate(editingPathId, 'd', { value: d });
+          onUpdate(editingPathId, 'path', { type: 'string', value: d });
       }
   };
 
@@ -407,7 +395,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       newPoints[dragPointIndex] = p;
       setPathPoints(newPoints);
       const d = pointsToSvgPath(newPoints, isPathClosed);
-      onUpdate(editingPathId, 'd', { value: d });
+      onUpdate(editingPathId, 'path', { type: 'string', value: d });
   };
 
   const handlePenUp = () => {
@@ -415,21 +403,20 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       setDragHandleType('none');
       setPenDragStart(null);
       
-      // Commit History for Vector Edit
       if (vectorStartSnapshot && editingPathId) {
           const node = projectRef.current.nodes[editingPathId];
           if (node) {
-              const startD = vectorStartSnapshot.d;
-              const endD = node.properties.d.value as string;
+              const startD = vectorStartSnapshot.path;
+              const dProp = node.properties.path;
+              const endD = dProp.type === 'string' ? String(dProp.value) : '';
               
               if (startD !== endD) {
-                   // Use Unified Commands.set for Vector Edits
                    onCommit(Commands.set(
                        projectRef.current,
                        editingPathId,
-                       'd',
-                       { value: endD },
-                       { value: startD },
+                       'path',
+                       { type: 'string', value: endD },
+                       { type: 'string', value: startD },
                        "Edit Path"
                    ));
               }
@@ -450,7 +437,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           return;
       }
 
-      // SELECT TOOL LOGIC
       const project = projectRef.current;
       const ctx = createEvalContext(project);
       
@@ -459,7 +445,9 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           const { hitIndex, handleType, lx, ly } = hitTestPathPoints(wx, wy, node, pathPoints);
           
           if (hitIndex !== -1) {
-              setVectorStartSnapshot({ id: selection, d: node.properties.d.value as string });
+              const dProp = node.properties.path;
+              const d = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, 0) as string);
+              setVectorStartSnapshot({ id: selection, path: d });
               setDragPointIndex(hitIndex);
               setDragHandleType(handleType);
               setPenDragStart({ x: lx, y: ly });
@@ -467,13 +455,12 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           }
       }
 
-      // Normal Object Hit Test
       const nodes = [...project.rootNodeIds].reverse();
       let hitId: string | null = null;
 
       for (const id of nodes) {
           const node = project.nodes[id];
-          if (node.type === 'value') continue; // Cannot select variables in viewport
+          if (node.type === 'value') continue; 
 
           const nx = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
           const ny = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
@@ -486,17 +473,22 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           if (node.type === 'rect') {
               const w = evaluateProperty(node.properties.width, project.meta.currentTime, ctx) as number;
               const h = evaluateProperty(node.properties.height, project.meta.currentTime, ctx) as number;
-              if (local.x >= -w/2 && local.x <= w/2 && local.y >= -h/2 && local.y <= h/2) isHit = true;
+              // Rect is 0..w, 0..h
+              if (local.x >= 0 && local.x <= w && local.y >= 0 && local.y <= h) isHit = true;
           } else if (node.type === 'circle') {
               const r = evaluateProperty(node.properties.radius, project.meta.currentTime, ctx) as number;
-              const dist = Math.sqrt(local.x*local.x + local.y*local.y);
+              // Circle center is (r, r)
+              const dx = local.x - r;
+              const dy = local.y - r;
+              const dist = Math.sqrt(dx*dx + dy*dy);
               if (dist <= r) isHit = true;
           } else if (node.type === 'vector') {
-              const d = evaluateProperty(node.properties.d, project.meta.currentTime, ctx) as string;
+              const d = evaluateProperty(node.properties.path, project.meta.currentTime, ctx) as string;
               const { points } = svgPathToPoints(d);
               if (points.length === 0) {
                    if (Math.abs(local.x) < 20 && Math.abs(local.y) < 20) isHit = true;
               } else {
+                   // Crude bounding box for hit test
                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
                    for(const p of points) {
                        if (p.x < minX) minX = p.x;
@@ -521,7 +513,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       if (hitId) {
           onSelect(hitId);
           setIsDragging(true);
-          // Snapshot for History
           const n = project.nodes[hitId];
           const sx = evaluateProperty(n.properties.x, project.meta.currentTime, ctx) as number;
           const sy = evaluateProperty(n.properties.y, project.meta.currentTime, ctx) as number;
@@ -547,18 +538,21 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
       if (!isDragging || !selection) return;
       
-      // Ensure we aren't dragging a variable node via some bug
-      if (projectRef.current.nodes[selection]?.type === 'value') return;
+      const node = projectRef.current.nodes[selection];
+      if (!node || node.type === 'value') return;
 
       const targetX = wx - dragOffset.x;
       const targetY = wy - dragOffset.y;
-      onUpdate(selection, 'x', { value: targetX });
-      onUpdate(selection, 'y', { value: targetY });
+      
+      if (node.properties.x.type === 'number') {
+        onUpdate(selection, 'x', { type: 'number', value: targetX });
+      }
+      if (node.properties.y.type === 'number') {
+        onUpdate(selection, 'y', { type: 'number', value: targetY });
+      }
   };
 
   const handleMouseUp = () => {
-      const activeTool = projectRef.current.meta.activeTool;
-      
       if (dragPointIndex !== null) {
           handlePenUp();
           return;
@@ -567,17 +561,39 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       if (isDragging && dragStartSnapshot && selection) {
           const project = projectRef.current;
           const node = project.nodes[selection];
-          const ctx = createEvalContext(project);
+          
+          if (node && node.type !== 'value') {
+              const ctx = createEvalContext(project);
+              const currentX = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
+              const currentY = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
 
-          const currentX = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
-          const currentY = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
+              const cmds: Command[] = [];
+              const EPSILON = 0.001;
 
-          // Commit if moved
-          if (Math.abs(currentX - dragStartSnapshot.x) > 0.1 || Math.abs(currentY - dragStartSnapshot.y) > 0.1) {
-             const startPos = { x: dragStartSnapshot.x, y: dragStartSnapshot.y };
-             const endPos = { x: currentX, y: currentY };
-             
-             onCommit(Commands.moveNode(selection, startPos, endPos));
+              // Check X
+              if (node.properties.x.type === 'number' && Math.abs(currentX - dragStartSnapshot.x) > EPSILON) {
+                   cmds.push(Commands.set(
+                       project, selection, 'x', 
+                       { type: 'number', value: currentX },
+                       { type: 'number', value: dragStartSnapshot.x },
+                       'Move X'
+                   ));
+              }
+
+              // Check Y
+              if (node.properties.y.type === 'number' && Math.abs(currentY - dragStartSnapshot.y) > EPSILON) {
+                   cmds.push(Commands.set(
+                       project, selection, 'y', 
+                       { type: 'number', value: currentY },
+                       { type: 'number', value: dragStartSnapshot.y },
+                       'Move Y'
+                   ));
+              }
+
+              if (cmds.length > 0) {
+                  if (cmds.length === 1) onCommit(cmds[0]);
+                  else onCommit(Commands.batch(cmds, `Move ${selection}`));
+              }
           }
       }
 
@@ -585,24 +601,20 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       setDragStartSnapshot(null);
   };
 
-  // --- RENDER GIZMOS ---
-
   const renderGizmo = () => {
       if (!selection) return null;
       const project = projectRef.current;
       const node = project.nodes[selection];
       if (!node) return null;
-      if (node.type === 'value') return null; // No gizmo for variables
+      if (node.type === 'value') return null; 
 
       const isVector = node.type === 'vector';
       const showPointEditor = project.meta.activeTool === 'pen' || isVector;
       const showBoundingBox = !isVector; 
 
-      // Use a REAL context so linked properties (ctx.get) work for gizmos too
       const ctx = createEvalContext(project);
       const t = project.meta.currentTime;
 
-      // Pass debugInfo to ensure errors are logged in console if expressions fail
       const x = evaluateProperty(node.properties.x, t, ctx, 0, { nodeId: selection, propKey: 'x' }) as number;
       const y = evaluateProperty(node.properties.y, t, ctx, 0, { nodeId: selection, propKey: 'y' }) as number;
       const rot = evaluateProperty(node.properties.rotation, t, ctx, 0, { nodeId: selection, propKey: 'rotation' }) as number;
@@ -619,26 +631,22 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
       const transform = `translate(${x}, ${y}) rotate(${rot}) scale(${scale})`;
 
-      // Removed outer wrapping translate group because origin is now top-left
+      // Gizmo is drawn in local space
+      // If Top-Left alignment: Local 0,0 is Top-Left. Box goes from 0,0 to w,h.
       return (
           <g transform={transform}>
-              {/* Bounding Box Gizmo */}
               {showBoundingBox && (
                 <>
-                    <rect x={-width/2} y={-height/2} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
-                    
-                    {/* Corners */}
-                    <rect x={-width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={width/2 - 4} y={-height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={-width/2 - 4} y={height/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={0} y={0} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
+                    <rect x={-4} y={-4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={width - 4} y={height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={width - 4} y={-4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={-4} y={height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
                 </>
               )}
 
-              {/* PATH EDITOR OVERLAY */}
               {showPointEditor && (
                   <g className="pen-editor-overlay">
-                      {/* Draw Control Lines */}
                       {pathPoints.map((p, i) => (
                           <g key={i}>
                               {(p.inX !== 0 || p.inY !== 0) && (
@@ -684,35 +692,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
 
   return (
     <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
-        {/* HUD / Stats Overlay */}
-        <div className="absolute top-4 right-4 bg-zinc-900/90 backdrop-blur border border-zinc-700/50 p-4 rounded-lg z-30 flex flex-col gap-3 shadow-2xl pointer-events-none select-none min-w-[200px]">
-          <div className="flex items-center gap-2 border-b border-zinc-700/50 pb-2">
-             {rendererMode === 'webgpu' ? <Zap className="text-yellow-400 fill-yellow-400/20" size={16} /> : <Cpu className="text-blue-400" size={16} />}
-             <span className={`font-bold text-xs uppercase tracking-wider ${rendererMode === 'webgpu' ? 'text-yellow-100' : 'text-zinc-200'}`}>
-                 {rendererMode === 'webgpu' ? 'GPU Accelerated' : 'SVG DOM'}
-             </span>
-          </div>
-          
-          <div className="space-y-1">
-            <div className="flex justify-between gap-4 text-xs font-mono text-zinc-400">
-                <span className="flex items-center gap-1.5"><Activity size={10}/> FPS</span>
-                <span className={`font-bold ${realFps < 30 ? 'text-red-400' : 'text-emerald-400'}`}>{realFps}</span>
-            </div>
-            <div className="flex justify-between gap-4 text-xs font-mono text-zinc-400">
-                <span className="flex items-center gap-1.5"><Layers size={10}/> Objects</span>
-                <span className="text-zinc-200">{instanceCount}</span>
-            </div>
-             <div className="flex justify-between gap-4 text-xs font-mono text-zinc-400">
-                <span>Tool</span>
-                <span className="text-zinc-200 uppercase">{projectRef.current.meta.activeTool}</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="absolute top-4 left-4 text-xs font-mono text-zinc-700 z-10 pointer-events-none select-none">
-            OUTPUT_VIEWPORT
-        </div>
-        
         <div 
             ref={containerRef}
             className={`relative shadow-2xl border border-zinc-800 bg-zinc-900 overflow-hidden ${projectRef.current.meta.activeTool === 'pen' ? 'cursor-crosshair' : 'cursor-default'}`}

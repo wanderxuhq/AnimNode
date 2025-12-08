@@ -32,7 +32,9 @@ export default function App() {
     togglePlay, 
     setTime,
     setTool,
-    runScript
+    runScript,
+    addKeyframe,
+    addKeyframeToNode
   } = useProject();
 
   const [propViewMode, setPropViewMode] = useState<'ui' | 'json'>('ui');
@@ -310,7 +312,7 @@ export default function App() {
       <div className="flex-1 flex overflow-hidden relative">
         
         {/* Left Panel (Layer List) OR Full Screen Graph */}
-        <div className={`bg-zinc-900 border-r border-zinc-700 flex flex-col z-20 transition-all duration-300 ${isGraphMode ? 'absolute inset-0 z-40' : 'w-64 relative'}`}>
+        <div className={`bg-zinc-900 border-r border-zinc-700 flex flex-col z-20 transition-all duration-300 ${isGraphMode ? 'absolute inset-0 z-40' : 'w-64 relative shrink-0'}`}>
             
             <div className={`p-3 border-b border-zinc-800 text-xs font-bold text-zinc-500 uppercase flex items-center gap-4 select-none bg-zinc-900 shrink-0 z-50 relative ${isGraphMode ? 'shadow-lg' : ''}`}>
                 <div className="flex gap-2 items-center min-w-fit">
@@ -391,8 +393,8 @@ export default function App() {
              />
         )}
 
-        {/* Right Panel */}
-        <div className={`z-50 h-full border-l border-zinc-700 bg-zinc-900 transition-all flex flex-col ${isGraphMode ? 'absolute right-0 w-96 shadow-2xl border-l-2 border-zinc-800' : 'w-80 relative'}`}>
+        {/* Right Panel (Flex Item, Relative) */}
+        <div className={`h-full border-l border-zinc-700 bg-zinc-900 transition-all flex flex-col shrink-0 ${isGraphMode ? 'w-96 border-l-2 border-zinc-800 absolute right-0 z-50 shadow-2xl' : 'w-80'}`}>
              
              {/* Tab Switcher */}
              <div className="flex border-b border-zinc-800 bg-zinc-950 shrink-0">
@@ -415,6 +417,7 @@ export default function App() {
                      <PropertyPanel 
                         nodes={project.nodes} 
                         selection={project.selection} 
+                        currentTime={project.meta.currentTime}
                         onUpdateProperty={updateProperty}
                         onCommit={commit} 
                         onRenameNode={renameNode}
@@ -422,6 +425,7 @@ export default function App() {
                         viewMode={propViewMode}
                         onViewModeChange={setPropViewMode}
                         focusTarget={focusTarget}
+                        onAddKeyframe={addKeyframe}
                     />
                 ) : (
                     <HistoryPanel 
@@ -441,6 +445,7 @@ export default function App() {
         onTogglePlay={togglePlay}
         onJumpToSource={handleJumpToSource}
         onRunScript={runScript}
+        onAddKeyframeToNode={addKeyframeToNode}
       />
     </div>
   );

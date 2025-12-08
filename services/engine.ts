@@ -1,4 +1,4 @@
-import { Node, ProjectState, Property } from '../types';
+import { Node, ProjectState, Property, Keyframe } from '../types';
 import { consoleService } from './console';
 import React from 'react';
 
@@ -78,41 +78,6 @@ function createSandbox(context: Record<string, any>) {
 // -----------------------------
 
 /**
- * Interpolates between keyframes
- */
-function interpolate(prop: Property, time: number): any {
-  if (!prop.keyframes || !Array.isArray(prop.keyframes)) return prop.value;
-
-  const kfs = [...prop.keyframes].sort((a, b) => a.time - b.time);
-  
-  if (kfs.length === 0) return prop.value;
-  if (time <= kfs[0].time) return kfs[0].value;
-  if (time >= kfs[kfs.length - 1].time) return kfs[kfs.length - 1].value;
-
-  let startKf = kfs[0];
-  let endKf = kfs[1];
-  
-  for (let i = 0; i < kfs.length - 1; i++) {
-    if (time >= kfs[i].time && time < kfs[i + 1].time) {
-      startKf = kfs[i];
-      endKf = kfs[i + 1];
-      break;
-    }
-  }
-
-  const duration = endKf.time - startKf.time;
-  if (duration === 0) return startKf.value;
-
-  const progress = (time - startKf.time) / duration;
-
-  if (typeof startKf.value === 'number') {
-    return startKf.value + (endKf.value - startKf.value) * progress;
-  }
-  
-  return startKf.value;
-}
-
-/**
  * Helper to detect circular references
  * Returns true if linking source->target would create a cycle
  */
@@ -133,19 +98,14 @@ export function detectLinkCycle(
   // Robust regex to find ctx.get('id', 'prop') calls with flexible spacing/quotes
   const codeRegex = /ctx\.get\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)/g;
   
-  // Regex to find direct variable references (matches any word that is also a node ID of type 'value')
-  // Note: This is a loose check, as parsing JS fully is complex. 
-  // We'll iterate all 'value' nodes and see if their ID appears in the expression.
   const variableNodes = Object.values(nodes).filter(n => n.type === 'value').map(n => n.id);
 
   while (queue.length > 0) {
     const { n, p } = queue.shift()!;
     const key = `${n}:${p}`;
 
-    // If we reach the source property, we found a cycle involving the source
     if (key === sourceKey) return true;
 
-    // Prevent infinite loops in the search itself (e.g. searching a separate closed loop)
     if (visited.has(key)) continue;
     visited.add(key);
 
@@ -154,23 +114,22 @@ export function detectLinkCycle(
     const prop = node.properties[p];
     if (!prop) continue;
 
-    if (prop.mode === 'link' && typeof prop.value === 'string' && prop.value.includes(':')) {
-      const [nextN, nextP] = prop.value.split(':');
+    if (prop.type === 'ref') {
+      const [nextN, nextP] = String(prop.value).split(':');
       queue.push({ n: nextN, p: nextP });
-    } else if (prop.mode === 'code') {
+    } else if (prop.type === 'expression') {
+      const expression = String(prop.value);
       // 1. Check for ctx.get calls
       let match;
       codeRegex.lastIndex = 0;
-      while ((match = codeRegex.exec(prop.expression)) !== null) {
+      while ((match = codeRegex.exec(expression)) !== null) {
           queue.push({ n: match[1], p: match[2] });
       }
 
       // 2. Check for implicit variable usage
-      // e.g. "return EARTH_RADIUS * 2" -> implicit dep on node 'EARTH_RADIUS' prop 'value'
       for (const varId of variableNodes) {
-          // Simple word boundary check
           const varRegex = new RegExp(`\\b${varId}\\b`);
-          if (varRegex.test(prop.expression)) {
+          if (varRegex.test(expression)) {
               queue.push({ n: varId, p: 'value' });
           }
       }
@@ -182,6 +141,41 @@ export function detectLinkCycle(
 
 // Cache to suppress duplicate logs/errors when inputs haven't changed (e.g. paused)
 const logCache = new Map<string, { time: number, expression: string }>();
+
+// --- INTERPOLATION HELPERS ---
+
+function lerp(a: number, b: number, t: number) {
+    return a + (b - a) * t;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? [
+        parseInt(result[1], 16),
+        parseInt(result[2], 16),
+        parseInt(result[3], 16)
+    ] : [0, 0, 0];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+    return "#" + ((1 << 24) + (Math.round(r) << 16) + (Math.round(g) << 8) + Math.round(b)).toString(16).slice(1);
+}
+
+function interpolateValue(valA: any, valB: any, t: number, type: string): any {
+    if (type === 'number') {
+        return lerp(Number(valA), Number(valB), t);
+    }
+    if (type === 'color') {
+        const [r1, g1, b1] = hexToRgb(String(valA));
+        const [r2, g2, b2] = hexToRgb(String(valB));
+        const r = lerp(r1, r2, t);
+        const g = lerp(g1, g2, t);
+        const b = lerp(b1, b2, t);
+        return rgbToHex(r, g, b);
+    }
+    // Fallback for types that can't interpolate smoothly (string, boolean, etc.)
+    return t < 0.5 ? valA : valB;
+}
 
 /**
  * Evaluates the value of a property at a specific time
@@ -198,49 +192,25 @@ export function evaluateProperty(
   
   // Prevent infinite recursion (Runtime safeguard)
   if (depth > 20) {
-      return prop.mode === 'static' ? prop.value : 0;
+      return (prop.type === 'number' || prop.type === 'string' || prop.type === 'color') ? prop.value : 0;
   }
 
-  if (prop.mode === 'static') {
-    if (prop.type === 'number') {
-        const val = Number(prop.value);
-        return isNaN(val) ? 0 : val;
-    }
-    return prop.value;
-  }
+  // --- 1. HANDLE SPECIAL TYPES (Expression, Ref) ---
 
-  if (prop.mode === 'keyframe') {
-    return interpolate(prop, time);
-  }
-
-  if (prop.mode === 'link') {
-    // Value format: "nodeId:propKey"
-    if (typeof prop.value === 'string' && prop.value.includes(':')) {
-       const [targetNodeId, targetPropKey] = prop.value.split(':');
-       // Use the context helper to fetch and evaluate the target
-       if (context.get) {
-          // Recursively call evaluate via context.get, increasing depth
-          // Note: context.get handles passing the correct debugInfo for the *target*
-          return context.get(targetNodeId, targetPropKey, depth + 1);
-       }
-    }
-    return 0; // Fallback
-  }
-
-  if (prop.mode === 'code') {
+  if (prop.type === 'expression') {
+    const expression = String(prop.value || '');
+    
     // Determine if we should allow logging for this frame
     let shouldLog = true;
     if (debugInfo) {
         const cacheKey = `${debugInfo.nodeId}:${debugInfo.propKey}`;
         const lastEntry = logCache.get(cacheKey);
         
-        // If exact same inputs (time and code) as last run, suppress logs
-        // This prevents spamming when paused or during multiple render passes for the same frame
-        if (lastEntry && lastEntry.time === time && lastEntry.expression === prop.expression) {
+        if (lastEntry && lastEntry.time === time && lastEntry.expression === expression) {
             shouldLog = false;
         } else {
             // Update cache
-            logCache.set(cacheKey, { time, expression: prop.expression });
+            logCache.set(cacheKey, { time, expression });
         }
     }
 
@@ -248,12 +218,18 @@ export function evaluateProperty(
       // 1. Prepare Safe Context
       const safeContextBase = {
           t: time,
-          val: prop.value,
+          // val: usually 0 in expression mode, unless we had a mechanism to store a "static base" within expression type
+          val: 0, 
           ctx: {
              ...context,
              audio: context.audio || { bass: 0, mid: 0, high: 0, treble: 0, fft: [] },
-             // get is already in context
-             // project is already in context (injected by Viewport/renderer)
+          },
+          // prop('key'): Helper to get sibling properties of the current node
+          prop: (key: string) => {
+             if (debugInfo && context.get) {
+                 return context.get(debugInfo.nodeId, key, depth + 1);
+             }
+             return 0;
           },
           // Create a proxied console object
           console: {
@@ -269,40 +245,78 @@ export function evaluateProperty(
           }
       };
 
-      // 2. Wrap in Sandbox Proxy
-      // This ensures 'with' block lookups hit our proxy first
       const sandbox = createSandbox(safeContextBase);
 
-      // 3. Execution (Sandboxed)
-      // "with(sandbox)" forces all variable lookups to go through the proxy "has" trap.
-      // Since "has" returns true, it tries to get it from the proxy.
-      // The proxy "get" trap then decides whether to allow it (whitelisted),
-      // look it up in global variables (via project nodes), or block it (undefined).
-      
-      const func = new Function('sandbox', `with(sandbox) { \n${prop.expression}\n }`);
+      const func = new Function('sandbox', `with(sandbox) { \n${expression}\n }`);
       const result = func(sandbox);
 
-      // Success! Clear any persistent errors for this property
       if (debugInfo) {
           consoleService.clearError(debugInfo.nodeId, debugInfo.propKey);
       }
       return result;
 
     } catch (e: any) {
-      // Capture runtime errors
       if (debugInfo && shouldLog) {
           consoleService.log('error', [e instanceof Error ? e.message : String(e)], debugInfo);
       }
-      return prop.value;
+      return 0; // Fallback
     }
   }
+
+  if (prop.type === 'ref') {
+    // Value format: "nodeId:propKey"
+    const link = String(prop.value);
+    if (link && link.includes(':')) {
+       const [targetNodeId, targetPropKey] = link.split(':');
+       // Use the context helper to fetch and evaluate the target
+       if (context.get) {
+          return context.get(targetNodeId, targetPropKey, depth + 1);
+       }
+    }
+    return 0; // Fallback
+  }
+
+  // --- 2. HANDLE KEYFRAME INTERPOLATION ---
+  if (prop.keyframes && prop.keyframes.length > 0) {
+      const kfs = prop.keyframes;
+      
+      // If only one keyframe
+      if (kfs.length === 1) return kfs[0].value;
+      
+      // Before first keyframe
+      if (time <= kfs[0].time) return kfs[0].value;
+      // After last keyframe
+      if (time >= kfs[kfs.length - 1].time) return kfs[kfs.length - 1].value;
+
+      // Find the pair of keyframes surrounding 'time'
+      // Simple linear scan (optimization: binary search)
+      for (let i = 0; i < kfs.length - 1; i++) {
+          const k1 = kfs[i];
+          const k2 = kfs[i+1];
+          if (time >= k1.time && time < k2.time) {
+              if (k1.easing === 'step') return k1.value;
+              
+              const t = (time - k1.time) / (k2.time - k1.time);
+              return interpolateValue(k1.value, k2.value, t, prop.type);
+          }
+      }
+      // Should effectively be caught by "After last keyframe", but fallback:
+      return kfs[kfs.length - 1].value;
+  }
+
+  // --- 3. HANDLE STATIC TYPES ---
   
+  if (prop.type === 'number') {
+      const val = Number(prop.value);
+      return isNaN(val) ? 0 : val;
+  }
+  
+  // Pass through for other types (string, boolean, object, array, color, etc.)
   return prop.value;
 }
 
 /**
  * Lightweight Lexer to find referenced variables in code
- * Skips strings, comments, and property access (obj.prop)
  */
 function getReferencedVariables(code: string, variables: Set<string>): Set<string> {
     const refs = new Set<string>();
@@ -351,16 +365,13 @@ function getReferencedVariables(code: string, variables: Set<string>): Set<strin
         const word = code.slice(start, i);
   
         // Check for property access (dot before)
-        // Check backwards from start-1 for non-whitespace
         let j = start - 1;
         while(j >= 0 && /\s/.test(code[j])) j--;
-        
         const isPropAccess = j >= 0 && code[j] === '.';
   
         if (!isPropAccess && variables.has(word)) {
           refs.add(word);
         }
-        // i is already at next char
         continue;
       }
   
@@ -371,7 +382,6 @@ function getReferencedVariables(code: string, variables: Set<string>): Set<strin
 
 /**
  * Static Analysis: Find unused variables
- * Returns a Set of variable IDs that are NOT referenced by any other node
  */
 export function findUnusedVariables(nodes: Record<string, Node>): Set<string> {
     const variables = new Set<string>();
@@ -388,20 +398,22 @@ export function findUnusedVariables(nodes: Record<string, Node>): Set<string> {
     // 2. Scan all properties
     Object.values(nodes).forEach(node => {
         Object.values(node.properties).forEach(prop => {
-            if (prop.mode === 'code') {
-                const refs = getReferencedVariables(prop.expression, variables);
+            if (prop.type === 'expression') {
+                const expr = String(prop.value);
+                const refs = getReferencedVariables(expr, variables);
                 refs.forEach(r => unused.delete(r));
                 
                 // Explicit check for ctx.get calls
                 const getRegex = /ctx\.get\(\s*['"]([^'"]+)['"]/g;
                 let match;
-                while ((match = getRegex.exec(prop.expression)) !== null) {
+                while ((match = getRegex.exec(expr)) !== null) {
                     unused.delete(match[1]);
                 }
 
-            } else if (prop.mode === 'link') {
-                 if (typeof prop.value === 'string' && prop.value.includes(':')) {
-                     const [targetId] = prop.value.split(':');
+            } else if (prop.type === 'ref') {
+                 const link = String(prop.value);
+                 if (link.includes(':')) {
+                     const [targetId] = link.split(':');
                      unused.delete(targetId);
                  }
             }
@@ -450,10 +462,11 @@ export function renderSVG(project: ProjectState, audioData?: any) {
     if (node.type === 'rect') {
       const w = evalProp('width', 100);
       const h = evalProp('height', 100);
+      // Top-left alignment: x=0, y=0
       return React.createElement('rect', {
         key: nodeId,
-        x: -w/2, 
-        y: -h/2, 
+        x: 0, 
+        y: 0, 
         width: w, 
         height: h, 
         fill: fill,
@@ -464,10 +477,11 @@ export function renderSVG(project: ProjectState, audioData?: any) {
       });
     } else if (node.type === 'circle') {
       const r = evalProp('radius', 50);
+      // Top-left alignment: Circle centered at (r, r)
       return React.createElement('circle', {
         key: nodeId,
-        cx: 0, 
-        cy: 0, 
+        cx: r, 
+        cy: r, 
         r: r, 
         fill: fill,
         stroke: stroke,
@@ -476,13 +490,10 @@ export function renderSVG(project: ProjectState, audioData?: any) {
         transform: transform
       });
     } else if (node.type === 'vector') {
-        const d = evalProp('d', '');
-        // Vector nodes handle stroke/strokeWidth internally in their own property logic
-        // but we can ensure they are passed through here as well if they follow standard prop names
-        
+        const path = evalProp('path', '');
         return React.createElement('path', {
             key: nodeId,
-            d: d,
+            d: path,
             fill: fill,
             stroke: stroke,
             strokeWidth: strokeWidth,

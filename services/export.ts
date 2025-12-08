@@ -9,6 +9,7 @@ export const generateSVGString = (project: ProjectState): string => {
   // 1. Create Context (Duplicated from engine.ts to ensure consistency)
   const evalContext: any = { 
       audio: audioData || {},
+      project: project, // Inject project for global variable lookup
       get: (nodeId: string, propKey: string, depth: number = 0) => {
           const node = project.nodes[nodeId];
           if (!node) return 0;
@@ -42,16 +43,18 @@ export const generateSVGString = (project: ProjectState): string => {
     if (node.type === 'rect') {
       const w = v('width', 100);
       const h = v('height', 100);
-      elements += `<rect x="${-w/2}" y="${-h/2}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
+      // Use 0,0 for top-left alignment
+      elements += `<rect x="0" y="0" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
     } 
     else if (node.type === 'circle') {
       const r = v('radius', 50);
-      elements += `<circle cx="0" cy="0" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
+      // Center at (r,r) implies the bounding box starts at (0,0)
+      elements += `<circle cx="${r}" cy="${r}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
     } 
     else if (node.type === 'vector') {
-        const d = v('d', '');
+        const path = v('path', '');
         // Note: attribute is stroke-width, not strokeWidth
-        elements += `<path d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
+        elements += `<path d="${path}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
     }
   });
 

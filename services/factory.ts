@@ -1,4 +1,4 @@
-import { Node, Property } from '../types';
+import { Node, Property, PropertyType } from '../types';
 
 // Safe UUID generator
 const uuid = () => {
@@ -11,43 +11,28 @@ const uuid = () => {
   });
 };
 
-export const createProp = (name: string, type: any, value: any): Property => {
-    let expression = `return ${JSON.stringify(value)};`;
-    
-    // Handle types that JSON.stringify breaks on or needs special handling
-    if (type === 'string') {
-        expression = `return "${value}";`;
-    } else if (type === 'function') {
-        expression = `return ${value.toString()};`;
-    } else if (type === 'object' || type === 'array') {
-        try {
-            expression = `return ${JSON.stringify(value, null, 2)};`;
-        } catch (e) {
-            expression = `return {}; // Error stringifying initial value`;
-        }
-    }
-
+export const createProp = (type: PropertyType, value: any): Property => {
     return {
-        id: uuid(),
-        name,
         type,
-        mode: 'static',
-        value,
-        keyframes: [],
-        expression
+        value
     };
 };
+
+const createExpr = (expression: string): Property => ({
+    type: 'expression',
+    value: expression
+});
 
 export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: string): Node => {
   const nodeId = id || uuid();
   
   // Default to screen center (400, 300) so new nodes are visible
   const baseProps = {
-      x: { ...createProp('X Position', 'number', 400), mode: 'static' as const, expression: 'return 400;' },
-      y: { ...createProp('Y Position', 'number', 300), mode: 'static' as const, expression: 'return 300;' },
-      rotation: { ...createProp('Rotation', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
-      scale: { ...createProp('Scale', 'number', 1), mode: 'static' as const, expression: 'return 1;' },
-      opacity: { ...createProp('Opacity', 'number', 1), mode: 'static' as const, expression: 'return 1;' },
+      x: createProp('number', 400),
+      y: createProp('number', 300),
+      rotation: createProp('number', 0),
+      scale: createProp('number', 1),
+      opacity: createProp('number', 1),
   };
 
   if (type === 'value') {
@@ -56,7 +41,7 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       type,
       parentId: null,
       properties: {
-        value: { ...createProp('Value', 'number', 0), mode: 'static' as const, expression: 'return 0;' }
+        value: createProp('number', 0)
       }
     };
   }
@@ -68,11 +53,13 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       parentId: null,
       properties: {
         ...baseProps,
-        width: { ...createProp('Width', 'number', 100), mode: 'static' as const, expression: 'return 100;' },
-        height: { ...createProp('Height', 'number', 100), mode: 'static' as const, expression: 'return 100;' },
-        fill: { ...createProp('Fill Color', 'color', '#3b82f6'), mode: 'static' as const, expression: 'return "#3b82f6";' },
-        stroke: { ...createProp('Stroke Color', 'color', 'transparent'), mode: 'static' as const, expression: 'return "transparent";' },
-        strokeWidth: { ...createProp('Stroke Width', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
+        width: createProp('number', 100),
+        height: createProp('number', 100),
+        fill: createProp('color', '#3b82f6'),
+        stroke: createProp('color', 'transparent'),
+        strokeWidth: createProp('number', 0),
+        // Path starts at 0,0 (Top-Left)
+        path: createExpr('const w = prop("width"); const h = prop("height"); return `M 0 0 L ${w} 0 L ${w} ${h} L 0 ${h} Z`;')
       }
     };
   }
@@ -84,10 +71,12 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       parentId: null,
       properties: {
         ...baseProps,
-        radius: { ...createProp('Radius', 'number', 50), mode: 'static' as const, expression: 'return 50;' },
-        fill: { ...createProp('Fill Color', 'color', '#ec4899'), mode: 'static' as const, expression: 'return "#ec4899";' },
-        stroke: { ...createProp('Stroke Color', 'color', 'transparent'), mode: 'static' as const, expression: 'return "transparent";' },
-        strokeWidth: { ...createProp('Stroke Width', 'number', 0), mode: 'static' as const, expression: 'return 0;' },
+        radius: createProp('number', 50),
+        fill: createProp('color', '#ec4899'),
+        stroke: createProp('color', 'transparent'),
+        strokeWidth: createProp('number', 0),
+        // Circle center is at (r, r), fitting inside the bounding box starting at 0,0
+        path: createExpr('const r = prop("radius"); return `M 0 ${r} A ${r} ${r} 0 1 1 ${2*r} ${r} A ${r} ${r} 0 1 1 0 ${r} Z`;')
       }
     };
   }
@@ -99,11 +88,10 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       parentId: null,
       properties: {
         ...baseProps,
-        // Start with empty path instead of star
-        d: { ...createProp('Path Data', 'string', ''), mode: 'static' as const, expression: 'return "";' },
-        fill: { ...createProp('Fill Color', 'color', 'transparent'), mode: 'static' as const, expression: 'return "transparent";' },
-        stroke: { ...createProp('Stroke Color', 'color', '#10b981'), mode: 'static' as const, expression: 'return "#10b981";' },
-        strokeWidth: { ...createProp('Stroke Width', 'number', 2), mode: 'static' as const, expression: 'return 2;' },
+        path: createProp('string', ''),
+        fill: createProp('color', 'transparent'),
+        stroke: createProp('color', '#10b981'),
+        strokeWidth: createProp('number', 2),
       }
     };
   }

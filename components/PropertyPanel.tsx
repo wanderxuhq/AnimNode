@@ -6,6 +6,7 @@ import { PropertyInput } from './PropertyInput';
 interface PropertyPanelProps {
   nodes: Record<string, Node>;
   selection: string | null;
+  currentTime: number; // Added
   onUpdateProperty: (nodeId: string, propKey: string, updates: Partial<Property>) => void;
   onCommit: (cmd: Command) => void;
   onRenameNode: (oldId: string, newId: string) => void;
@@ -13,11 +14,12 @@ interface PropertyPanelProps {
   viewMode: 'ui' | 'json';
   onViewModeChange: (mode: 'ui' | 'json') => void;
   focusTarget?: { nodeId: string; propKey: string; timestamp: number } | null;
+  onAddKeyframe: (nodeId: string, propKey: string, value: any) => void;
 }
 
 const TRANSFORM_KEYS = ['x', 'y', 'rotation', 'scale'];
 
-export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommit, onRenameNode, onDeleteNode, viewMode, onViewModeChange, focusTarget }: PropertyPanelProps) => {
+export const PropertyPanel = memo(({ nodes, selection, currentTime, onUpdateProperty, onCommit, onRenameNode, onDeleteNode, viewMode, onViewModeChange, focusTarget, onAddKeyframe }: PropertyPanelProps) => {
   const selectedNode = selection ? nodes[selection] : null;
   const [localId, setLocalId] = useState('');
 
@@ -44,6 +46,21 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommi
           (e.target as HTMLInputElement).blur();
       }
   };
+
+  const renderInput = (key: string, prop: Property) => (
+      <PropertyInput 
+        key={key} 
+        propKey={key} 
+        prop={prop} 
+        nodeId={selectedNode.id} 
+        nodes={nodes}
+        currentTime={currentTime}
+        onUpdate={onUpdateProperty}
+        onCommit={onCommit}
+        autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
+        onToggleKeyframe={onAddKeyframe}
+    />
+  );
 
   // Group properties
   const allProps = Object.entries(selectedNode.properties);
@@ -119,18 +136,7 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommi
                         <div className="text-xs text-zinc-500 mb-2 italic">
                             This variable can be used in other expressions directly by name: <span className="text-blue-400 font-mono">{selectedNode.id}</span>
                         </div>
-                        {allProps.map(([key, prop]) => (
-                            <PropertyInput 
-                                key={prop.id} 
-                                propKey={key} 
-                                prop={prop} 
-                                nodeId={selectedNode.id} 
-                                nodes={nodes}
-                                onUpdate={onUpdateProperty}
-                                onCommit={onCommit}
-                                autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
-                            />
-                        ))}
+                        {allProps.map(([key, prop]) => renderInput(key, prop))}
                     </div>
                 ) : (
                     <>
@@ -141,18 +147,7 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommi
                             Transform
                         </div>
                         <div className="space-y-4">
-                            {transformProps.map(([key, prop]) => (
-                            <PropertyInput 
-                                key={prop.id} 
-                                propKey={key}
-                                prop={prop} 
-                                nodeId={selectedNode.id} 
-                                nodes={nodes}
-                                onUpdate={onUpdateProperty}
-                                onCommit={onCommit}
-                                autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
-                            />
-                            ))}
+                            {transformProps.map(([key, prop]) => renderInput(key, prop))}
                         </div>
                     </div>
 
@@ -163,18 +158,7 @@ export const PropertyPanel = memo(({ nodes, selection, onUpdateProperty, onCommi
                             Styles & Shape
                         </div>
                         <div className="space-y-4">
-                            {shapeProps.map(([key, prop]) => (
-                            <PropertyInput 
-                                key={prop.id} 
-                                propKey={key} 
-                                prop={prop} 
-                                nodeId={selectedNode.id} 
-                                nodes={nodes}
-                                onUpdate={onUpdateProperty}
-                                onCommit={onCommit}
-                                autoFocusTrigger={focusTarget?.nodeId === selectedNode.id && focusTarget.propKey === key ? focusTarget.timestamp : undefined}
-                            />
-                            ))}
+                            {shapeProps.map(([key, prop]) => renderInput(key, prop))}
                         </div>
                     </div>
                     </>
