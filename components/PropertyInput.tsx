@@ -154,8 +154,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       
       let newState: Partial<Property> = {};
       let hasChanged = false;
-      let isKeyframeCommit = false;
-
+      
       // Handle Commits based on current Type in State
       const currentType = state.prop.type;
 
@@ -189,8 +188,13 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
           const hasKeyframes = state.prop.keyframes && state.prop.keyframes.length > 0;
           
           if (hasKeyframes) {
-              isKeyframeCommit = true;
-              newState = { type: currentType, value: val }; 
+              // IMPORTANT: Use keyframes from current state (updated live via auto-key)
+              // Do NOT use onToggleKeyframe as that uses current global time which may have shifted
+              newState = { 
+                  type: currentType, 
+                  value: val,
+                  keyframes: state.prop.keyframes 
+              }; 
               hasChanged = true; 
           } else {
               newState = { type: currentType, value: val };
@@ -200,22 +204,18 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       }
 
       if (hasChanged) {
-          if (isKeyframeCommit && onToggleKeyframe) {
-              onToggleKeyframe(state.nodeId, state.propKey, newState.value);
-          } else {
-              consoleService.log('info', [`Commit ${state.propKey}`], { nodeId: state.nodeId, propKey: state.propKey });
-              const label = formatLabel(state.propKey);
-              
-              const command = Commands.set(
-                  { nodes: state.nodes } as any, 
-                  state.nodeId,
-                  state.propKey,
-                  newState, 
-                  oldState, 
-                  `Set ${label}`
-              );
-              onCommit(command);
-          }
+          consoleService.log('info', [`Commit ${state.propKey}`], { nodeId: state.nodeId, propKey: state.propKey });
+          const label = formatLabel(state.propKey);
+          
+          const command = Commands.set(
+              { nodes: state.nodes } as any, 
+              state.nodeId,
+              state.propKey,
+              newState, 
+              oldState, 
+              `Set ${label}`
+          );
+          onCommit(command);
       }
 
       isEditingRef.current = false;
