@@ -150,7 +150,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const audioData = audioController.getAudioData();
 
       if (project.meta.renderer === 'webgpu' && gpuReady && canvasWebGpuRef.current) {
-          const nodes = project.rootNodeIds;
+          // REVERSE RENDER ORDER: Last Index (Bottom) -> First Index (Top)
+          // We want Index 0 drawn LAST.
+          const nodes = [...project.rootNodeIds].reverse();
+          
           let renderableCount = 0;
           for(const id of nodes) {
               const node = project.nodes[id];
@@ -455,7 +458,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           }
       }
 
-      const nodes = [...project.rootNodeIds].reverse();
+      // Hit Test in Reverse Render Order (Top to Bottom)
+      // Index 0 is Top. Index N is Bottom.
+      // So we iterate 0 to N.
+      const nodes = project.rootNodeIds; 
       let hitId: string | null = null;
 
       for (const id of nodes) {

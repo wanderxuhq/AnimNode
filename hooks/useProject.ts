@@ -20,7 +20,7 @@ export function useProject() {
   const [history, setHistory] = useState<{ past: Command[], future: Command[] }>({ past: [], future: [] });
   const historyRef = useRef(history);
 
-  // Sync ref when state changes naturally
+  // Sync ref when state changes naturally via React render cycle
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
@@ -99,17 +99,22 @@ export function useProject() {
   // --- HISTORY MANAGEMENT ---
 
   const commit = useCallback((cmd: Command) => {
-      setHistory(prev => {
-          // Limit history size to 50
-          const newPast = [...prev.past, cmd];
-          if (newPast.length > 50) newPast.shift();
-          return {
-              past: newPast,
-              future: []
-          };
-      });
-      // Apply immediate state change
-      setProject(prev => cmd.redo(prev));
+      // 1. Calculate new state immediately using the Ref (Source of Truth for sync ops)
+      const nextState = cmd.redo(projectRef.current);
+      
+      // 2. Synchronously update Ref so subsequent commands in the same tick (scripts) see the update
+      projectRef.current = nextState;
+
+      // 3. Update History Ref synchronously
+      const prevHist = historyRef.current;
+      const newPast = [...prevHist.past, cmd];
+      if (newPast.length > 50) newPast.shift();
+      const nextHistory = { past: newPast, future: [] };
+      historyRef.current = nextHistory;
+
+      // 4. Trigger React Updates (Async)
+      setHistory(nextHistory);
+      setProject(nextState);
   }, []);
 
   const undo = useCallback(() => {
@@ -119,9 +124,16 @@ export function useProject() {
       const cmd = past[past.length - 1];
       const newPast = past.slice(0, -1);
       const newFuture = [cmd, ...future];
+      const nextHistory = { past: newPast, future: newFuture };
       
-      setHistory({ past: newPast, future: newFuture });
-      setProject(prev => cmd.undo(prev));
+      const nextState = cmd.undo(projectRef.current);
+      
+      // Sync Refs
+      projectRef.current = nextState;
+      historyRef.current = nextHistory;
+      
+      setHistory(nextHistory);
+      setProject(nextState);
   }, []);
 
   const redo = useCallback(() => {
@@ -131,25 +143,25 @@ export function useProject() {
       const cmd = future[0];
       const newFuture = future.slice(1);
       const newPast = [...past, cmd];
+      const nextHistory = { past: newPast, future: newFuture };
       
-      setHistory({ past: newPast, future: newFuture });
-      setProject(prev => cmd.redo(prev));
+      const nextState = cmd.redo(projectRef.current);
+      
+      // Sync Refs
+      projectRef.current = nextState;
+      historyRef.current = nextHistory;
+
+      setHistory(nextHistory);
+      setProject(nextState);
   }, []);
 
   const jumpToHistory = useCallback((index: number) => {
       const { past, future } = historyRef.current;
-      // Index is target index in 'past'
-      // If index < current past length, we undo
-      // If index > current past length, we redo (implied)
-      
-      // Simpler: Reconstruct state from scratch or diff? 
-      // We will just undo/redo sequentially until we match.
       
       let currentPast = [...past];
       let currentFuture = [...future];
       let currentState = projectRef.current;
 
-      // Current "head" is at past.length - 1
       const currentIndex = currentPast.length - 1;
 
       if (index === currentIndex) return;
@@ -165,12 +177,16 @@ export function useProject() {
               }
           }
       } else {
-          // This path logic only works if we show future in the list too. 
-          // But usually 'jump' implies jumping to a past state.
-          // For now, only support jumping BACK to a state.
+          // Future jump logic (if supported later)
       }
 
-      setHistory({ past: currentPast, future: currentFuture });
+      const nextHistory = { past: currentPast, future: currentFuture };
+
+      // Sync Refs
+      projectRef.current = currentState;
+      historyRef.current = nextHistory;
+
+      setHistory(nextHistory);
       setProject(currentState);
   }, []);
 
@@ -184,25 +200,14 @@ export function useProject() {
           
           let newProp = { ...prop, ...updates };
           
-          // --- AUTO-KEY LOGIC (Live Preview) ---
-          // If we are dragging a value (live update) and the property has keyframes enabled,
-          // we want to update the keyframe at the current time to reflect the drag immediately.
-          // This avoids the UI "snapping back" to the interpolated value during drag.
           if (prop.keyframes && prop.keyframes.length > 0 && 'value' in updates) {
               const t = prev.meta.currentTime;
-              const EPSILON = 0.05; // 50ms tolerance for auto-key snapping
-              
-              // Try to find a keyframe at current time
+              const EPSILON = 0.05;
               const kfIndex = prop.keyframes.findIndex(k => Math.abs(k.time - t) < EPSILON);
               
               let newKeyframes = [...prop.keyframes];
               if (kfIndex >= 0) {
-                  // Update existing
                   newKeyframes[kfIndex] = { ...newKeyframes[kfIndex], value: updates.value };
-              } else {
-                  // Auto-Key logic: If moving a keyframed prop at a new time, we generally wait for explicit add.
-                  // However, for UX 'feel', dragging usually only updates IF a keyframe exists or if in "Auto Key" mode.
-                  // For now, we only update if keyframe exists to prevent accidental spam.
               }
               newProp.keyframes = newKeyframes;
           }
@@ -238,32 +243,23 @@ export function useProject() {
       };
 
       const oldKeyframes = prop.keyframes || [];
-      
-      // Check for existing keyframe at time T
       const existingIndex = oldKeyframes.findIndex(k => Math.abs(k.time - t) < 0.01);
       
       let newKeyframes = [...oldKeyframes];
       let label = "Add Keyframe";
 
       if (existingIndex >= 0) {
-          // Toggle/Remove logic could go here if triggered by same value
-          // But 'addKeyframe' usually means 'set keyframe'.
-          // We will use this as a 'Set/Update' action.
           newKeyframes[existingIndex] = { ...newKeyframes[existingIndex], value: value };
           label = "Update Keyframe";
       } else {
-          // Insert and Sort
           newKeyframes.push(newKeyframe);
           newKeyframes.sort((a, b) => a.time - b.time);
       }
 
-      const update = { keyframes: newKeyframes, value: value }; // Update base value too
-      
-      // Use standard set command
+      const update = { keyframes: newKeyframes, value: value };
       commit(Commands.set(state, nodeId, propKey, update, undefined, label));
   }, [commit]);
 
-  // Special helper to snapshot multiple properties at once (e.g. for Timeline "Diamond" button)
   const addKeyframeToNode = useCallback((nodeId: string) => {
       const state = projectRef.current;
       const node = state.nodes[nodeId];
@@ -278,8 +274,6 @@ export function useProject() {
           const prop = node.properties[key];
           if (!prop) return;
 
-          // If it's an expression/ref, we skip or bake? 
-          // For now, only simple types.
           if (prop.type !== 'number' && prop.type !== 'color') return;
 
           const val = prop.value;
@@ -369,6 +363,6 @@ export function useProject() {
     setTool,
     runScript,
     addKeyframe,
-    addKeyframeToNode // Exported
+    addKeyframeToNode
   };
 }

@@ -207,22 +207,15 @@ export default function App() {
     if (sourceIndex === targetIndex) return;
 
     // Logic for insertion
-    // The list is displayed in REVERSE order (Highest Index = Visual Top)
-    // "Top" of visual item means "Higher Z-index" -> Higher Array Index
-    // "Bottom" of visual item means "Lower Z-index" -> Lower Array Index
-    
-    // Visual Top (Above Item) -> Insert After (Index + 1)
-    // Visual Bottom (Below Item) -> Insert At (Index)
+    // Index 0 is TOP. Index N is BOTTOM.
+    // List displayed 0..N.
     
     let insertionIndex = targetIndex;
-    if (dragPosition === 'top') {
+    
+    if (dragPosition === 'bottom') {
         insertionIndex = targetIndex + 1;
     }
 
-    // Adjustment: If we remove an item from a lower index, all subsequent indices shift down.
-    // If the insertion point is higher than the source, we need to account for that shift 
-    // to land in the visually intended spot.
-    
     if (sourceIndex < insertionIndex) {
         insertionIndex -= 1;
     }
@@ -330,8 +323,8 @@ export default function App() {
                 <NodeGraph project={project} onSelect={handleNodeSelect} />
             ) : (
                 <div className="flex-1 overflow-y-auto p-2 space-y-1 relative" onDragLeave={handleDragLeave}>
-                    {/* Reverse map to show Top layer at Top of list */}
-                    {project.rootNodeIds.map((id, index) => ({ id, index })).reverse().map(({ id, index }) => {
+                    {/* Standard Map: Index 0 is Top Layer */}
+                    {project.rootNodeIds.map((id, index) => {
                          const node = project.nodes[id];
                          if (!node) return null;
                          const isDragTarget = dragOverId === id;

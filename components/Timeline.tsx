@@ -73,9 +73,10 @@ export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTog
           if (!node) return;
           
           // Identify Animated Properties
-          const animatedPropsKeys = Object.entries(node.properties)
-                .filter(([_, prop]) => prop.keyframes && prop.keyframes.length > 0)
-                .map(([key]) => key);
+          const animatedPropsKeys = Object.keys(node.properties).filter(key => {
+              const prop = node.properties[key];
+              return prop.keyframes && prop.keyframes.length > 0;
+          });
                 
           // Main Node Row
           rows.push(

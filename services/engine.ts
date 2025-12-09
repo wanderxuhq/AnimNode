@@ -440,7 +440,12 @@ export function renderSVG(project: ProjectState, audioData?: any) {
       }
   };
 
-  const children = project.rootNodeIds.map(nodeId => {
+  // REVERSE order for Painter's Algorithm.
+  // We want rootNodeIds[0] (Top) to be drawn LAST.
+  // We want rootNodeIds[N] (Bottom) to be drawn FIRST.
+  const renderOrder = [...project.rootNodeIds].reverse();
+
+  const children = renderOrder.map(nodeId => {
     const node = project.nodes[nodeId];
     if (!node) return null;
     if (node.type === 'value') return null; // Do not render variables visually in SVG

@@ -1,5 +1,3 @@
-
-
 import { Command, ProjectState, Node, Property, Keyframe } from '../types';
 import { createNode } from './factory';
 
@@ -38,6 +36,7 @@ export const Commands = {
         newId = `${prefix}_${index}`;
     }
     const newNode = createNode(type, newId);
+    // Add to FRONT of array (Index 0). In new logic, Index 0 is TOP/FRONT.
     const applyAdd = (p: ProjectState) => ({
         ...p,
         nodes: { ...p.nodes, [newNode.id]: newNode },
@@ -236,6 +235,20 @@ export const Commands = {
           undo: (s) => applyReorder(s, toIndex, fromIndex),
           redo: (s) => applyReorder(s, fromIndex, toIndex)
       };
+  },
+  // API Helpers for Move Up/Down
+  moveNodeUp: (nodeId: string, project: ProjectState): Command | null => {
+      const index = project.rootNodeIds.indexOf(nodeId);
+      // "Up" means visually up, which corresponds to index 0 (Top Layer).
+      // So we move towards index 0.
+      if (index <= 0) return null; // Already at top
+      return Commands.reorderNode(index, index - 1);
+  },
+  moveNodeDown: (nodeId: string, project: ProjectState): Command | null => {
+      const index = project.rootNodeIds.indexOf(nodeId);
+      // "Down" means visually down, which corresponds to index N (Bottom Layer).
+      if (index < 0 || index >= project.rootNodeIds.length - 1) return null; // Already at bottom
+      return Commands.reorderNode(index, index + 1);
   },
   // Unified Property Set Command
   set: (

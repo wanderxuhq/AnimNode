@@ -5,223 +5,224 @@
 ## 1. 运行环境 (Runtime Environment)
 
 *   **语言**: JavaScript (ES6+)。
-*   **执行模式**: 原子化 (Atomic)。整个脚本作为一个事务执行，生成单条历史记录。
+*   **执行模式**: 事务性 (Transactional)。整个脚本作为一个原子操作执行，生成单条历史记录。脚本执行过程中的状态变更对后续代码立即可见。
 *   **沙箱**: 脚本运行在受限环境中，无 `window` / `document` 访问权限。
 *   **入口**: 脚本按顺序执行，立即生效。
 
-## 2. 坐标系 (Coordinate System)
+## 2. 坐标系与锚点 (Coordinates & Anchor Point)
 
-*   **原点 (Origin)**: `(0, 0)` 位于画布的 **左上角**。
-*   **方向**: X 轴向右为正，Y 轴向下为正。
-*   **默认位置**: 使用 `addNode` 创建的新节点默认位于画布中心 (通常是 `400, 300`)。
+*   **全局坐标**: 原点 `(0, 0)` 位于画布的 **左上角**。X 轴向右为正，Y 轴向下为正。
+*   **锚点 (Anchor Point)**: 所有节点的 `x` 和 `y` 属性均指代其**局部坐标系的原点**，在视觉上对应**包围盒的左上角**。
+    *   **矩形 (Rect)**: `(x, y)` 是矩形的左上角顶点。
+    *   **圆形 (Circle)**: `(x, y)` 是圆**外接正方形的左上角**。圆心实际位于 `(x + radius, y + radius)`。
+    *   **矢量 (Vector)**: `(x, y)` 是 SVG Path 数据中 `0,0` 点在画布上的位置。
+*   **默认位置**: `addNode` 创建的新节点默认位于画布中心 (通常是 `400, 300`)。
 
 ---
 
-## 3. 全局函数与变量 (Global Context)
+## 3. 全局函数 (Global Functions)
 
-在脚本的顶层作用域可直接访问以下对象：
+在脚本的顶层作用域可直接访问以下函数：
 
-### 核心函数
-| 函数签名 | 返回值 | 描述 |
-| :--- | :--- | :--- |
-| `addNode(type: string)` | `NodeProxy` | 创建新节点。`type` 可选值: `'rect'`, `'circle'`, `'vector'`。默认位置为屏幕中心。 |
-| `createVariable(value: any)` | `NodeProxy` | **创建持久化全局变量节点**。系统会自动使用 `const` 声明的变量名作为节点 ID。返回的对象可在 UI 中显示，也可在其他节点的表达式中通过名字引用。 |
-| `removeNode(id: string)` | `void` | 删除指定 ID 的节点。 |
-| `clear()` | `void` | **重要**: 清空当前画布上的所有节点。建议在生成式脚本开头调用。 |
-| `log(...args)` | `void` | 输出信息到控制台。 |
-| `warn(...args)` | `void` | 输出警告。 |
-| `error(...args)` | `void` | 输出错误。 |
+### 核心操作
 
-### 变量定义指南 (Variable Creation Guide)
+#### `addNode(type: string): NodeProxy`
+创建并返回一个新的节点对象。
+*   **参数**: `type` - 节点类型，可选值: `'rect'`, `'circle'`, `'vector'`。
+*   **返回**: 节点的代理对象，可用于设置属性。
+*   **默认层级**: 新建的节点会自动置于**最顶层** (Top Layer)。
+*   **示例**: `const box = addNode('rect');`
 
-请根据用途选择正确的变量定义方式：
+#### `createVariable(initialValue: any): NodeProxy`
+创建一个持久化的全局变量节点。
+*   **参数**: `initialValue` - 初始值 (数字, 字符串, 颜色等)。
+*   **说明**: 系统会自动使用声明的变量名作为节点 ID。**这是在表达式中共享数据的唯一方式**。
+*   **示例**: `const SPEED = createVariable(100);`
 
-#### A. 全局/持久化变量 (Global/Persistent Variables)
-**场景**: 变量需要在 **UI面板中显示**，或者需要被 **其他节点的表达式 (Expression)** 引用。
-**方法**: 使用 `createVariable`。这会在场景图 (Scene Graph) 中创建一个类型为 `value` 的节点。
+#### `removeNode(id: string): void`
+删除指定 ID 的节点。
+*   **参数**: `id` - 目标节点的 ID。
+
+#### `moveUp(nodeOrId: NodeProxy | string): void`
+将节点向上移动一层（置于更上方）。
+*   **参数**: 节点代理对象或节点 ID。
+*   **说明**: 在左侧图层面板中，节点会向上移动一个位置。
+
+#### `moveDown(nodeOrId: NodeProxy | string): void`
+将节点向下移动一层（置于更下方）。
+*   **参数**: 节点代理对象或节点 ID。
+*   **说明**: 在左侧图层面板中，节点会向下移动一个位置。
+
+#### `clear(): void`
+清空当前项目中的所有节点。
+*   **说明**: 建议在生成式脚本的开头调用此函数，以重置画布。
+
+### 调试与日志
+
+#### `log(...args: any[]): void`
+输出普通信息到控制台面板。
+
+#### `warn(...args: any[]): void`
+输出警告信息。
+
+#### `error(...args: any[]): void`
+输出错误信息。
+
+---
+
+## 4. 节点对象属性 (Node Properties)
+
+所有通过 `addNode` 或 `createVariable` 返回的对象都支持以下属性。
+
+### 通用属性 (Base Properties)
+所有可视节点 (`rect`, `circle`, `vector`) 都具备的属性。
+
+| 属性名 | 类型 | 读/写 | 默认值 | 描述 |
+| :--- | :--- | :--- | :--- | :--- |
+| `id` | `string` | RW | Unique ID | 节点的唯一标识符。修改此属性会重命名节点。 |
+| `x` | `number` | RW | 400 | **左上角** X 轴位置 (px)。 |
+| `y` | `number` | RW | 300 | **左上角** Y 轴位置 (px)。 |
+| `rotation` | `number` | RW | 0 | 旋转角度 (度)。 |
+| `scale` | `number` | RW | 1 | 缩放比例。 |
+| `opacity` | `number` | RW | 1 | 不透明度 (0-1)。 |
+| `fill` | `color` | RW | #ffffff | 填充颜色 (Hex, RGB, 或 CSS 颜色名)。 |
+
+### 矩形 (Rect)
+类型: `'rect'`
+
+| 属性名 | 类型 | 读/写 | 默认值 | 描述 |
+| :--- | :--- | :--- | :--- | :--- |
+| `width` | `number` | RW | 100 | 宽度。 |
+| `height` | `number` | RW | 100 | 高度。 |
+| `stroke` | `color` | RW | transparent | 描边颜色。 |
+| `strokeWidth` | `number` | RW | 0 | 描边宽度。 |
+| `path` | `string` | Read | Computed | (只读) 自动计算的矩形路径。 |
+
+### 圆形 (Circle)
+类型: `'circle'`
+
+| 属性名 | 类型 | 读/写 | 默认值 | 描述 |
+| :--- | :--- | :--- | :--- | :--- |
+| `radius` | `number` | RW | 50 | 半径。 |
+| `stroke` | `color` | RW | transparent | 描边颜色。 |
+| `strokeWidth` | `number` | RW | 0 | 描边宽度。 |
+| `path` | `string` | Read | Computed | (只读) 自动计算的圆形路径。 |
+
+### 矢量路径 (Vector)
+类型: `'vector'`
+
+| 属性名 | 类型 | 读/写 | 默认值 | 描述 |
+| :--- | :--- | :--- | :--- | :--- |
+| `path` | `string` | RW | "" | **SVG Path Data 字符串** (例如 "M 0 0 L 10 10 Z")。 |
+| `stroke` | `color` | RW | #10b981 | 描边颜色。 |
+| `strokeWidth` | `number` | RW | 2 | 描边宽度。 |
+
+### 变量 (Variable)
+类型: `'value'`
+
+| 属性名 | 类型 | 读/写 | 默认值 | 描述 |
+| :--- | :--- | :--- | :--- | :--- |
+| `value` | `any` | RW | 0 | 变量存储的值。 |
+
+---
+
+## 5. 赋值与表达式 (Assignments & Expressions)
+
+AnimNode 支持两种属性赋值模式。请特别注意**动态表达式的作用域限制**。
+
+### A. 静态赋值 (Static Assignment)
+在脚本执行时计算一次数值。可以使用脚本中的任何局部变量。
 
 ```javascript
-// 1. 创建全局变量 'SUN_X'
-// 场景图中会出现一个名为 SUN_X 的节点
-const SUN_X = createVariable(400);
-
-// 2. 在其他节点的表达式中引用
-// 只有通过 createVariable 创建的变量才能在 () => ... 中被引用
-const earth = addNode('circle');
-earth.x = () => SUN_X + 100; // 有效引用
+const gap = 10;
+// 计算结果 20 被赋值给 x。后续 gap 变化不会影响 x。
+node.x = gap * 2; 
 ```
 
-#### B. 脚本局部变量 (Script-Local Variables)
-**场景**: 变量仅在 **当前脚本逻辑内部** 使用（如循环计数器、临时计算结果），不需要暴露给 UI 或其他节点。
-**方法**: 使用标准的 JavaScript `const` 或 `let`。**不要** 为这些变量使用 `createVariable`，以免污染场景图。
+### B. 表达式赋值 (Expression Assignment)
+赋值一个箭头函数 `() => ...`，用于创建随时间或状态变化的动画。
 
+#### ⚠️ 关键规则：作用域限制
+由于表达式是在脚本运行结束后、在每一帧渲染时独立执行的，因此：
+1.  **不能**引用脚本中的普通局部变量（`const`, `let` 等）。
+2.  **必须**使用 `createVariable` 来创建需要在表达式中引用的全局数据。
+3.  **必须**使用 `ctx.get('id', 'prop')` 来引用其他节点。
+
+#### 示例
 ```javascript
-// 这里的 count 和 i 只是脚本运行时的临时变量
-// 执行完脚本后，它们不会作为节点存在于场景中
-const count = 5; 
-const spacing = 60;
+// ❌ 错误示范
+const speed = 5; 
+// 运行时报错: "speed is not defined"
+node.x = () => t * speed; 
+
+// ✅ 正确示范 1: 使用 createVariable
+const SPEED = createVariable(5); 
+node.x = () => t * SPEED; 
+
+// ✅ 正确示范 2: 引用其他节点
+const box = addNode('rect');
+box.id = "leader";
+// 必须用 ctx.get，不能直接写 leader.x
+node.x = () => ctx.get('leader', 'x') + 20;
+```
+
+#### 表达式内可用变量
+在箭头函数内部，只有以下变量是可用的：
+*   `t`: 全局时间 (秒)。
+*   `val`: 该属性当前的静态值。
+*   `ctx`: 上下文对象。
+    *   `ctx.get(nodeId, propKey)`: 获取任意节点属性值。
+    *   `ctx.audio.bass`: 低频音量 (0-1)。
+*   `Math`: JavaScript 标准数学库。
+*   **全局变量节点 ID**: 通过 `createVariable` 创建的变量名。
+
+---
+
+## 6. 常用代码片段 (Snippets)
+
+### 初始化
+```javascript
+clear(); // 始终建议先清空
+const CENTER_X = createVariable(400);
+const CENTER_Y = createVariable(300);
+```
+
+### 创建时钟刻度 (展示旋转与定位)
+```javascript
+const count = 12;
+const r = 150;
 
 for(let i = 0; i < count; i++) {
-    const n = addNode('rect');
-    // 使用局部变量进行计算并静态赋值
-    n.x = 400 + (i - count/2) * spacing; 
+    const mark = addNode('rect');
+    mark.width = 4;
+    mark.height = 20;
+    
+    const angle = (i / count) * Math.PI * 2;
+    
+    // 静态计算：因为位置固定，不需要用表达式
+    // 注意：x, y 是左上角，如果要居中需要减去宽高的一半
+    mark.x = 400 + Math.sin(angle) * r - mark.width / 2;
+    mark.y = 300 - Math.cos(angle) * r - mark.height / 2;
+    
+    mark.rotation = i * (360 / count);
 }
 ```
 
-### 内置对象
-*   `Math`: 标准 JS Math 对象。
-*   `Date`: 标准 JS Date 对象。
-*   **节点 ID**: 场景中已存在的所有节点 ID 都会自动注册为全局变量 (例如 `rect_0`, `sun`)。
-
----
-
-## 4. 节点对象 (Node Proxy)
-
-`addNode` 或 `createVariable` 返回的对象。
-
-### 元数据属性 (Metadata)
-| 属性 | 类型 | 读/写 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `.id` | `string` | RW | 节点的唯一标识符。修改此属性会重命名节点。**必须唯一**。 |
-| `.type` | `string` | Read | 节点类型 (`rect`, `circle`, `vector`, `value`)。 |
-
-### 视觉属性 (Visual Properties)
-所有节点通用的变换和外观属性 (不适用于 `value` 类型)。
-
-| 属性名 | 类型 | 默认值 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `x` | `number` | 400 | X 轴位置 (单位: px)。原点在左上角。 |
-| `y` | `number` | 300 | Y 轴位置 (单位: px)。原点在左上角，向下为正。 |
-| `rotation` | `number` | 0 | 旋转角度 (度)。 |
-| `scale` | `number` | 1 | 缩放比例。 |
-| `opacity` | `number` | 1 | 不透明度 (0-1)。 |
-| `fill` | `color` | `#ffffff` | 填充颜色 (Hex 或 CSS string)。 |
-
-### 形状特有属性 (Shape Specific)
-
-**Type: 'rect'**
-| 属性名 | 类型 | 默认值 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `width` | `number` | 100 | 宽度。 |
-| `height` | `number` | 100 | 高度。 |
-| `stroke` | `color` | `transparent` | 描边颜色。 |
-| `strokeWidth` | `number` | 0 | 描边宽度。 |
-| `path` | `string` | (Computed) | 只读。根据宽高自动计算的 SVG Path。 |
-
-**Type: 'circle'**
-| 属性名 | 类型 | 默认值 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `radius` | `number` | 50 | 半径。 |
-| `stroke` | `color` | `transparent` | 描边颜色。 |
-| `strokeWidth` | `number` | 0 | 描边宽度。 |
-| `path` | `string` | (Computed) | 只读。根据半径自动计算的 SVG Path。 |
-
-**Type: 'vector'**
-| 属性名 | 类型 | 默认值 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `path` | `string` | `""` | SVG Path Data 字符串 (e.g. "M 0 0 L 10 10 Z")。 |
-| `stroke` | `color` | `none` | 描边颜色。 |
-| `strokeWidth`| `number` | 0 | 描边宽度。 |
-
-**Type: 'value' (Variable)**
-| 属性名 | 类型 | 默认值 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `value` | `number` | 0 | 变量的值。 |
-
----
-
-## 5. 赋值语法规则 (Assignment Rules)
-
-AnimNode 支持两种属性赋值模式。
-
-### 模式 A: 静态赋值 (Static Assignment)
-设置一个固定的常数值。
+### 动态波形 (Vector Path)
 ```javascript
-// 直接赋值
-node.x = 100; 
+const wave = addNode('vector');
+wave.stroke = "#3b82f6";
+wave.strokeWidth = 4;
 
-// 使用变量赋值 (注意：这是静态快照！)
-// 如果 R 是普通数值/字符串变量，这里会静态读取 R 的当前值并赋值给 node.radius
-const R = createVariable(50);
-node.radius = R; 
-// 结果: node.radius 的值被静态设置为 50。
-// 如果后续 R 变为 100，node.radius 仍然是 50。
-```
-
-### 模式 B: 表达式赋值 (Expression Assignment)
-设置一个随时间变化的动画逻辑或动态链接。
-**语法**: 赋值一个 **箭头函数 (Arrow Function)**。
-
-```javascript
-// 正确写法：创建动态表达式
-// 让 x 在 300 到 500 之间往复运动
-node.x = () => 400 + Math.sin(t) * 100;
-
-// 动态引用全局变量
-const ORBIT_R = createVariable(150);
-
-// 注意使用箭头函数 () => ...
-// 这样 engine 会保存 "return ORBIT_R;" 作为表达式
-// 结果: node.x 会每一帧读取 ORBIT_R 的当前值
-node.x = () => 400 + Math.cos(t) * ORBIT_R; 
-```
-
-### 特殊情况：函数变量 (Function Variable)
-如果你创建的变量本身就是一个函数，那么将其直接赋值给属性时，系统会自动将其视为表达式链接。
-
-```javascript
-// 1. 创建一个函数类型的变量
-const GET_Y = createVariable(() => 300 + Math.sin(t) * 100);
-
-// 2. 直接赋值
-// 因为 GET_Y 是函数类型，系统会自动将其设置为 'code' 模式，并链接到 GET_Y
-node.y = GET_Y; 
-// 等同于: node.y = () => GET_Y();
-```
-
-### 表达式内部环境
-在箭头函数 `() => { ... }` 内部，可访问以下特殊变量：
-
-1.  **`t`** (`number`): 全局时间，单位为秒。
-2.  **`val`** (`any`): 该属性当前的静态基准值。
-3.  **`ctx`** (`object`): 上下文工具对象。
-4.  **`全局变量`**: 直接使用通过 `createVariable` 创建的变量名 (Node ID)。
-
----
-
-## 6. 代码生成示例 (Examples)
-
-### 全局变量示例
-```javascript
-clear();
-// 1. 创建全局变量 (会自动显示在列表中, ID为 SUN_X)
-const SUN_X = createVariable(400); 
-const ORBIT_R = createVariable(150);
-
-// 2. 创建节点
-const sun = addNode('circle');
-sun.radius = 30;
-sun.fill = "#fbbf24";
-// 3. 动态引用变量 (使用箭头函数)
-sun.x = () => SUN_X; 
-sun.y = 300;
-
-const earth = addNode('circle');
-earth.radius = 10;
-earth.fill = "#3b82f6";
-// 4. 在表达式中使用变量运算
-earth.x = () => SUN_X + Math.cos(t) * ORBIT_R;
-earth.y = () => 300 + Math.sin(t) * ORBIT_R;
-```
-
-### 批量生成 (Grid System)
-```javascript
-clear();
-// count 和 i 是脚本局部变量，不需要 createVariable
-const count = 5; 
-for(let i=0; i<count; i++) {
-    const n = addNode('rect');
-    n.x = 400 + (i - count/2) * 60;
-    n.y = () => 300 + Math.sin(t + i) * 50; 
-}
+// 动态 Path：必须放在箭头函数中
+wave.path = () => {
+    let d = "M 0 300";
+    // 在表达式内部无法访问脚本的循环变量 i，除非它是硬编码的数字
+    // 或者将数据存储在 'value' 类型的节点数组中
+    for(let x=0; x<=800; x+=20) {
+        const y = 300 + Math.sin(t * 5 + x * 0.02) * 100;
+        d += ` L ${x} ${y}`;
+    }
+    return d;
+};
 ```

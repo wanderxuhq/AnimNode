@@ -1,5 +1,3 @@
-
-
 import { ProjectState, Command, Property, PropertyType } from '../types';
 import { Commands } from './commands';
 import { evaluateProperty } from './engine';
@@ -111,15 +109,18 @@ export const createScriptContext = (
                 const node = project.nodes[currentRefId];
                 
                 if (!node) {
-                    log('error', [`Cannot set '${prop}' of undefined node.`]);
+                    log('error', [`Cannot set '${prop}' of undefined node '${currentRefId}'.`]);
                     return false;
                 }
 
                 if (prop === 'id') {
-                    // ... renaming logic same as before ...
                     const newId = String(value).trim();
                     if (newId === currentRefId) return true;
-                    if (!newId || project.nodes[newId]) return false;
+                    if (!newId || project.nodes[newId]) {
+                         log('warn', [`Cannot rename '${currentRefId}' to '${newId}'. ID might be taken or invalid.`]);
+                         return false;
+                    }
+
                     const cmd = Commands.renameNode(currentRefId, newId, project);
                     if (cmd) {
                         commit(cmd);
@@ -191,21 +192,13 @@ export const createScriptContext = (
                     };
                     // Special case: setting a variable node to a function value
                     if (node.type === 'value' && prop === 'value') {
-                         // Logic decision: If assigning function to Variable, should it be an expression that executes?
-                         // Or a function object value?
-                         // Standard script: "var x = () => 10" usually means X holds the function or X calculates.
-                         // Given 'expression' type exists, it's safer to treat it as expression source.
                          propUpdate.type = 'expression';
                     }
                 } 
                 else {
                     let finalValue = value;
-                    // We need to know the target type.
                     const targetProp = node.properties[prop];
                     let targetType = targetProp.type;
-                    
-                    // For Value nodes, type is dynamic if currently 'number' or something simple
-                    // If target is expression, we overwrite with static value type
                     
                     if (node.type === 'value' && prop === 'value') {
                          if (Array.isArray(finalValue)) targetType = 'array';
@@ -223,7 +216,6 @@ export const createScriptContext = (
                     } else if (targetType === 'boolean') {
                         finalValue = Boolean(value);
                     } else if (targetType === 'expression' || targetType === 'ref') {
-                        // Overwrite complex types with simple type inferred from value
                         if (typeof finalValue === 'number') targetType = 'number';
                         else if (typeof finalValue === 'string') targetType = 'string';
                         else if (typeof finalValue === 'boolean') targetType = 'boolean';
@@ -236,6 +228,7 @@ export const createScriptContext = (
                 }
 
                 try {
+                    // Pass current project state (workingState) to Commands.set
                     const cmd = Commands.set(project, currentRefId, prop, propUpdate, undefined, `Script: Set ${prop}`);
                     commit(cmd);
                     return true;
@@ -269,6 +262,7 @@ export const createScriptContext = (
     const context: any = {};
     const currentProject = projectGetter();
     
+    // Register existing nodes
     currentProject.rootNodeIds.forEach(id => {
         if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(id)) {
             context[id] = getProxy(id);
@@ -279,6 +273,7 @@ export const createScriptContext = (
     context.warn = (...args: any[]) => log('warn', args);
     context.error = (...args: any[]) => log('error', args);
     context.Math = Math;
+    context.Date = Date;
     context.t = 0;
     context.ctx = {}; 
     
@@ -311,7 +306,6 @@ export const createScriptContext = (
 
         if (value !== undefined) {
              let propUpdate: any = {};
-             // Determine structure based on value type
              if (typeof value === 'function') {
                  propUpdate = {
                      type: 'expression',
@@ -346,6 +340,22 @@ export const createScriptContext = (
         uncacheProxy(id);
     };
 
+    context.moveUp = (nodeOrId: any) => {
+        const id = (typeof nodeOrId === 'string') ? nodeOrId : (nodeOrId as any)[PROXY_ID_SYMBOL];
+        if (id) {
+             const cmd = Commands.moveNodeUp(id, projectGetter());
+             if (cmd) commit(cmd);
+        }
+    };
+
+    context.moveDown = (nodeOrId: any) => {
+        const id = (typeof nodeOrId === 'string') ? nodeOrId : (nodeOrId as any)[PROXY_ID_SYMBOL];
+        if (id) {
+             const cmd = Commands.moveNodeDown(id, projectGetter());
+             if (cmd) commit(cmd);
+        }
+    };
+
     context.clear = () => {
         const cmd = Commands.clearProject(projectGetter());
         commit(cmd);
@@ -355,6 +365,19 @@ export const createScriptContext = (
     return context;
 };
 
+/**
+ * Executes a script in a transactional way.
+ * 
+ * To ensure atomicity (all or nothing) and consistency (script sees its own updates),
+ * we use a temporary 'workingState'.
+ * 
+ * 1. 'workingState' starts as a copy of the current project state.
+ * 2. Commands executed by the script (addNode, set, etc.) are applied immediately to 'workingState'.
+ *    This allows subsequent lines in the script to see these changes (e.g. adding a node then renaming it).
+ * 3. These commands are also collected in 'pendingCommands'.
+ * 4. If script execution succeeds, we bundle 'pendingCommands' into a single Batch Command
+ *    and commit it to the real project history.
+ */
 export const executeScript = (
     code: string, 
     projectGetter: () => ProjectState, 
@@ -362,7 +385,25 @@ export const executeScript = (
     logger: { log: (l: 'info'|'warn'|'error', m: any[]) => void }
 ) => {
     const transformedCode = transformScript(code);
-    const context = createScriptContext(projectGetter, commit, (l, m) => logger.log(l, m));
+    
+    // 1. Create a working copy of the state
+    // We must use this workingState for all reads during script execution.
+    let workingState = projectGetter();
+    const pendingCommands: Command[] = [];
+
+    // 2. Define a local commit function that updates working state & collects commands
+    const localCommit = (cmd: Command) => {
+        pendingCommands.push(cmd);
+        // Apply command to local state immediately so script can see the effect
+        workingState = cmd.redo(workingState);
+    };
+
+    // 3. Define a local getter that returns the working state
+    const localGetter = () => workingState;
+
+    // 4. Create context using local state handling
+    // IMPORTANT: We pass localGetter, not projectGetter
+    const context = createScriptContext(localGetter, localCommit, (l, m) => logger.log(l, m));
     
     const paramNames = Object.keys(context);
     const paramValues = Object.values(context);
@@ -370,6 +411,11 @@ export const executeScript = (
     try {
         const fn = new Function(...paramNames, `"use strict";\n${transformedCode}`);
         fn(...paramValues);
+        
+        // 5. If successful, batch all commands into one "Run Script" transaction
+        if (pendingCommands.length > 0) {
+            commit(Commands.batch(pendingCommands, "Run Script"));
+        }
         return true;
     } catch (e: any) {
         logger.log('error', [e.message]);

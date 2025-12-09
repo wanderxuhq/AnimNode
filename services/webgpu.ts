@@ -321,6 +321,23 @@ export class WebGPURenderer {
     passEncoder.setVertexBuffer(0, this.vertexBuffer);
     passEncoder.setVertexBuffer(1, this.instanceBuffer);
     
+    // Reverse render order via iterating instances backwards?
+    // WebGPU draws instances in buffer order.
+    // If we filled the buffer Forward (0..N), and we want Painter's Algo where 0 is TOP,
+    // we need to draw 0 LAST.
+    // So we should fill the buffer in REVERSE: N, N-1, ..., 0.
+    // Or just draw.
+    
+    // In viewport, we construct the buffer based on rootNodeIds.
+    // Viewport iterates rootNodeIds 0..N.
+    // If rootNodeIds[0] is TOP, we want it at end of buffer (drawn last).
+    // Viewport logic:
+    // let index = 0; for(const id of nodes) { ... fill buffer at index ... }
+    // This fills buffer 0..N.
+    // So rootNodeIds[0] is at instance 0. Drawn first. Background.
+    // We want rootNodeIds[0] to be Top.
+    // So we need to iterate in REVERSE in Viewport.
+    
     passEncoder.draw(4, count);
     passEncoder.end();
 
