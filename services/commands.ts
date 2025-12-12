@@ -1,7 +1,6 @@
 import { Command, ProjectState, Node, Property, Keyframe } from '../types';
 import { createNode } from './factory';
 
-// Helper to extract function body
 const extractBody = (fn: Function | string): string => {
     let str = fn.toString().trim();
     const arrowRegex = /^(\([^\)]*\)|[a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>/;
@@ -22,9 +21,6 @@ const extractBody = (fn: Function | string): string => {
     return str; 
 };
 
-/**
- * Commands Factory
- */
 export const Commands = {
   addNode: (type: 'rect' | 'circle' | 'vector' | 'value', project: ProjectState): { command: Command, nodeId: string } => {
     let index = 0;
@@ -36,7 +32,7 @@ export const Commands = {
         newId = `${prefix}_${index}`;
     }
     const newNode = createNode(type, newId);
-    // Add to FRONT of array (Index 0). In new logic, Index 0 is TOP/FRONT.
+    
     const applyAdd = (p: ProjectState) => ({
         ...p,
         nodes: { ...p.nodes, [newNode.id]: newNode },
@@ -105,23 +101,21 @@ export const Commands = {
     
     if (!fromId || !toId) return null;
     if (fromId === toId) return null;
-    if (project.nodes[toId]) return null; // Target collision
-    if (!project.nodes[fromId]) return null; // Source missing
+    if (project.nodes[toId]) return null; 
+    if (!project.nodes[fromId]) return null; 
 
     const performRename = (state: ProjectState, fId: string, tId: string) => {
         const node = state.nodes[fId];
-        if (!node) return state; // Safety check
+        if (!node) return state;
 
         const newNode = { ...node, id: tId };
         const newNodes: Record<string, Node> = {};
         
-        // Rebuild nodes map with new ID
         Object.keys(state.nodes).forEach(key => {
             if (key === fId) newNodes[tId] = newNode;
             else newNodes[key] = state.nodes[key];
         });
 
-        // Update references in ALL nodes
         Object.values(newNodes).forEach((n: Node) => {
             let propsUpdated = false;
             const newProps = { ...n.properties };
@@ -129,7 +123,6 @@ export const Commands = {
             Object.keys(n.properties).forEach(pKey => {
                 const prop = n.properties[pKey];
                 
-                // Update Links
                 if (prop.type === 'ref') {
                     const linkVal = String(prop.value);
                     if (linkVal.startsWith(fId + ':')) {
@@ -139,7 +132,6 @@ export const Commands = {
                     }
                 }
                 
-                // Update Code References (ctx.get)
                 if (prop.type === 'expression') {
                     const expression = String(prop.value);
                     const regex = new RegExp(`ctx\\.get\\(['"]${fId}['"]`, 'g');
@@ -150,7 +142,6 @@ export const Commands = {
                         propsUpdated = true;
                     }
                     
-                    // Update Variable References (e.g. "return MY_VAR")
                     const varRegex = new RegExp(`\\b${fId}\\b`, 'g');
                     if (varRegex.test(newExpr)) {
                          newExpr = newExpr.replace(varRegex, tId);
@@ -236,21 +227,16 @@ export const Commands = {
           redo: (s) => applyReorder(s, fromIndex, toIndex)
       };
   },
-  // API Helpers for Move Up/Down
   moveNodeUp: (nodeId: string, project: ProjectState): Command | null => {
       const index = project.rootNodeIds.indexOf(nodeId);
-      // "Up" means visually up, which corresponds to index 0 (Top Layer).
-      // So we move towards index 0.
-      if (index <= 0) return null; // Already at top
+      if (index <= 0) return null; 
       return Commands.reorderNode(index, index - 1);
   },
   moveNodeDown: (nodeId: string, project: ProjectState): Command | null => {
       const index = project.rootNodeIds.indexOf(nodeId);
-      // "Down" means visually down, which corresponds to index N (Bottom Layer).
-      if (index < 0 || index >= project.rootNodeIds.length - 1) return null; // Already at bottom
+      if (index < 0 || index >= project.rootNodeIds.length - 1) return null;
       return Commands.reorderNode(index, index + 1);
   },
-  // Unified Property Set Command
   set: (
     project: ProjectState, 
     nodeId: string, 
@@ -266,7 +252,7 @@ export const Commands = {
       const prev = oldValue || { 
           type: currentProp.type,
           value: currentProp.value,
-          keyframes: currentProp.keyframes // Preserve keyframes if unspecified in oldValue
+          keyframes: currentProp.keyframes 
       };
 
       const next = { ...prev, ...newValue };
@@ -303,7 +289,6 @@ export const Commands = {
           name: label,
           timestamp: Date.now(),
           undo: (s) => {
-              // Undo in reverse order
               let state = s;
               for (let i = commands.length - 1; i >= 0; i--) {
                   state = commands[i].undo(state);

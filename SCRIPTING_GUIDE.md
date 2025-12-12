@@ -1,3 +1,4 @@
+
 # AnimNode Scripting API Reference
 
 此文档定义了 AnimNode 脚本系统的编程接口。AI 模型在生成脚本时应严格遵守此规范。
@@ -5,7 +6,8 @@
 ## 1. 运行环境 (Runtime Environment)
 
 *   **语言**: JavaScript (ES6+)。
-*   **执行模式**: 事务性 (Transactional)。整个脚本作为一个原子操作执行，生成单条历史记录。脚本执行过程中的状态变更对后续代码立即可见。
+*   **执行模式**: 事务性 (Transactional)。整个脚本作为一个原子操作执行，生成单条历史记录。
+    *   **即时性**: 脚本执行过程中，`addNode` 或 `set` 操作后的状态更新对后续代码**立即可见**（例如，`addNode` 后立即修改其属性是安全的）。
 *   **沙箱**: 脚本运行在受限环境中，无 `window` / `document` 访问权限。
 *   **入口**: 脚本按顺序执行，立即生效。
 
@@ -30,7 +32,7 @@
 创建并返回一个新的节点对象。
 *   **参数**: `type` - 节点类型，可选值: `'rect'`, `'circle'`, `'vector'`。
 *   **返回**: 节点的代理对象，可用于设置属性。
-*   **默认层级**: 新建的节点会自动置于**最顶层** (Top Layer)。
+*   **默认层级**: 新建的节点会自动置于**最顶层** (即图层列表的第一个位置，Index 0)。
 *   **示例**: `const box = addNode('rect');`
 
 #### `createVariable(initialValue: any): NodeProxy`
@@ -44,14 +46,21 @@
 *   **参数**: `id` - 目标节点的 ID。
 
 #### `moveUp(nodeOrId: NodeProxy | string): void`
-将节点向上移动一层（置于更上方）。
+将节点向上移动一层（视觉上更靠前，即图层列表 Index 减小）。
 *   **参数**: 节点代理对象或节点 ID。
-*   **说明**: 在左侧图层面板中，节点会向上移动一个位置。
 
 #### `moveDown(nodeOrId: NodeProxy | string): void`
-将节点向下移动一层（置于更下方）。
+将节点向下移动一层（视觉上更靠后，即图层列表 Index 增加）。
 *   **参数**: 节点代理对象或节点 ID。
-*   **说明**: 在左侧图层面板中，节点会向下移动一个位置。
+
+#### `addKeyframe(nodeOrId: any, prop: string, value: any, time?: number): void`
+为指定属性添加关键帧。如果属性当前是表达式模式，此操作会将其转换为关键帧动画模式。
+*   **参数**:
+    *   `nodeOrId`: 节点对象或 ID。
+    *   `prop`: 属性名 (如 `'x'`, `'opacity'`)。
+    *   `value`: 关键帧的值。
+    *   `time`: (可选) 时间点秒数。如果不传，默认为当前播放头时间。
+*   **示例**: `addKeyframe(box, 'x', 500, 2.0);`
 
 #### `clear(): void`
 清空当前项目中的所有节点。
@@ -70,7 +79,49 @@
 
 ---
 
-## 4. 节点对象属性 (Node Properties)
+## 4. 绘图 API (Path Builder)
+
+为了避免手动拼接 SVG 字符串，您可以使用 `Path` 类来构建矢量形状。此功能在脚本和表达式中均可用。
+
+#### `new Path()`
+创建一个新的路径构建器。
+
+#### 方法:
+*   `moveTo(x, y)`: 移动画笔。
+*   `lineTo(x, y)`: 绘制直线。
+*   `quadraticCurveTo(cx, cy, x, y)`: 二次贝塞尔曲线。
+*   `bezierCurveTo(c1x, c1y, c2x, c2y, x, y)`: 三次贝塞尔曲线。
+*   `close()`: 闭合路径。
+*   `rect(x, y, w, h)`: 绘制矩形。
+*   `circle(cx, cy, r)`: 绘制圆形。
+*   `ellipse(cx, cy, rx, ry)`: 绘制椭圆。
+*   `clear()`: 清空路径。
+
+#### 示例:
+```javascript
+const v = addNode('vector');
+const p = new Path();
+p.moveTo(0, 0);
+p.lineTo(100, 50);
+p.lineTo(0, 100);
+p.close();
+
+v.path = p; // 系统自动转换为 SVG 字符串
+```
+
+在表达式中使用：
+```javascript
+// vector.path expression
+const p = new Path();
+const y = Math.sin(t) * 50;
+p.moveTo(0, 0);
+p.lineTo(100, y);
+return p; 
+```
+
+---
+
+## 5. 节点对象属性 (Node Properties)
 
 所有通过 `addNode` 或 `createVariable` 返回的对象都支持以下属性。
 
@@ -85,7 +136,7 @@
 | `rotation` | `number` | RW | 0 | 旋转角度 (度)。 |
 | `scale` | `number` | RW | 1 | 缩放比例。 |
 | `opacity` | `number` | RW | 1 | 不透明度 (0-1)。 |
-| `fill` | `color` | RW | #ffffff | 填充颜色 (Hex, RGB, 或 CSS 颜色名)。 |
+| `fill` | `color` | RW | #ffffff | 填充颜色 (Hex, RGB, 颜色名, 或 CSS 渐变)。<br>支持 `linear-gradient(...)` 和 `radial-gradient(...)`。 |
 
 ### 矩形 (Rect)
 类型: `'rect'`
@@ -113,9 +164,10 @@
 
 | 属性名 | 类型 | 读/写 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- | :--- |
-| `path` | `string` | RW | "" | **SVG Path Data 字符串** (例如 "M 0 0 L 10 10 Z")。 |
+| `path` | `string` | RW | "" | **SVG Path Data**。可赋值字符串或 `Path` 对象。 |
 | `stroke` | `color` | RW | #10b981 | 描边颜色。 |
 | `strokeWidth` | `number` | RW | 2 | 描边宽度。 |
+| `fill` | `color` | RW | transparent | 填充颜色。 |
 
 ### 变量 (Variable)
 类型: `'value'`
@@ -123,106 +175,3 @@
 | 属性名 | 类型 | 读/写 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- | :--- |
 | `value` | `any` | RW | 0 | 变量存储的值。 |
-
----
-
-## 5. 赋值与表达式 (Assignments & Expressions)
-
-AnimNode 支持两种属性赋值模式。请特别注意**动态表达式的作用域限制**。
-
-### A. 静态赋值 (Static Assignment)
-在脚本执行时计算一次数值。可以使用脚本中的任何局部变量。
-
-```javascript
-const gap = 10;
-// 计算结果 20 被赋值给 x。后续 gap 变化不会影响 x。
-node.x = gap * 2; 
-```
-
-### B. 表达式赋值 (Expression Assignment)
-赋值一个箭头函数 `() => ...`，用于创建随时间或状态变化的动画。
-
-#### ⚠️ 关键规则：作用域限制
-由于表达式是在脚本运行结束后、在每一帧渲染时独立执行的，因此：
-1.  **不能**引用脚本中的普通局部变量（`const`, `let` 等）。
-2.  **必须**使用 `createVariable` 来创建需要在表达式中引用的全局数据。
-3.  **必须**使用 `ctx.get('id', 'prop')` 来引用其他节点。
-
-#### 示例
-```javascript
-// ❌ 错误示范
-const speed = 5; 
-// 运行时报错: "speed is not defined"
-node.x = () => t * speed; 
-
-// ✅ 正确示范 1: 使用 createVariable
-const SPEED = createVariable(5); 
-node.x = () => t * SPEED; 
-
-// ✅ 正确示范 2: 引用其他节点
-const box = addNode('rect');
-box.id = "leader";
-// 必须用 ctx.get，不能直接写 leader.x
-node.x = () => ctx.get('leader', 'x') + 20;
-```
-
-#### 表达式内可用变量
-在箭头函数内部，只有以下变量是可用的：
-*   `t`: 全局时间 (秒)。
-*   `val`: 该属性当前的静态值。
-*   `ctx`: 上下文对象。
-    *   `ctx.get(nodeId, propKey)`: 获取任意节点属性值。
-    *   `ctx.audio.bass`: 低频音量 (0-1)。
-*   `Math`: JavaScript 标准数学库。
-*   **全局变量节点 ID**: 通过 `createVariable` 创建的变量名。
-
----
-
-## 6. 常用代码片段 (Snippets)
-
-### 初始化
-```javascript
-clear(); // 始终建议先清空
-const CENTER_X = createVariable(400);
-const CENTER_Y = createVariable(300);
-```
-
-### 创建时钟刻度 (展示旋转与定位)
-```javascript
-const count = 12;
-const r = 150;
-
-for(let i = 0; i < count; i++) {
-    const mark = addNode('rect');
-    mark.width = 4;
-    mark.height = 20;
-    
-    const angle = (i / count) * Math.PI * 2;
-    
-    // 静态计算：因为位置固定，不需要用表达式
-    // 注意：x, y 是左上角，如果要居中需要减去宽高的一半
-    mark.x = 400 + Math.sin(angle) * r - mark.width / 2;
-    mark.y = 300 - Math.cos(angle) * r - mark.height / 2;
-    
-    mark.rotation = i * (360 / count);
-}
-```
-
-### 动态波形 (Vector Path)
-```javascript
-const wave = addNode('vector');
-wave.stroke = "#3b82f6";
-wave.strokeWidth = 4;
-
-// 动态 Path：必须放在箭头函数中
-wave.path = () => {
-    let d = "M 0 300";
-    // 在表达式内部无法访问脚本的循环变量 i，除非它是硬编码的数字
-    // 或者将数据存储在 'value' 类型的节点数组中
-    for(let x=0; x<=800; x+=20) {
-        const y = 300 + Math.sin(t * 5 + x * 0.02) * 100;
-        d += ` L ${x} ${y}`;
-    }
-    return d;
-};
-```

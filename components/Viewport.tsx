@@ -3,7 +3,6 @@ import { ProjectState, Node, Command, Property } from '../types';
 import { renderSVG, evaluateProperty } from '../services/engine';
 import { audioController } from '../services/audio';
 import { webgpuRenderer } from '../services/webgpu';
-import { Zap, Cpu, Layers, Activity } from 'lucide-react';
 import { PathPoint, pointsToSvgPath, svgPathToPoints } from '../services/path';
 import { Commands } from '../services/commands';
 
@@ -11,20 +10,25 @@ interface ViewportProps {
   projectRef: React.MutableRefObject<ProjectState>;
   onSelect: (id: string | null) => void;
   onUpdate: (id: string, propKey: string, updates: any) => void;
-  onCommit: (cmd: Command) => void; // New prop for history
+  onCommit: (cmd: Command) => void; 
   selection: string | null;
   onAddNode: (type: 'rect' | 'circle' | 'vector' | 'value') => string;
 }
 
 // Helper to convert hex to normalized rgb
 const hexToRgb = (hex: string) => {
+    if (!hex || hex === 'transparent' || hex === 'none') return [0, 0, 0, 0];
+    
+    // Check if it's a gradient or url, if so, return transparent (let SVG handle it or fail gracefully)
+    if (hex.includes('gradient') || hex.includes('url')) return [0, 0, 0, 0];
+
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
     return result ? [
         parseInt(result[1], 16) / 255,
         parseInt(result[2], 16) / 255,
         parseInt(result[3], 16) / 255,
         1
-    ] : [1, 0, 1, 1];
+    ] : [0, 0, 0, 1]; // Default to Black if parse fails, not Purple
 };
 
 // Helper: Transform Point
@@ -41,6 +45,44 @@ function transformPointToLocal(
     const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
     return { x: rx / scale, y: ry / scale };
 }
+
+// Calculate distance from point (lx, ly) to line segment (p1, p2)
+function distToSegment(lx: number, ly: number, p1: PathPoint, p2: PathPoint) {
+    const x = lx, y = ly;
+    const x1 = p1.x, y1 = p1.y;
+    const x2 = p2.x, y2 = p2.y;
+
+    const A = x - x1;
+    const B = y - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const len_sq = C * C + D * D;
+    let param = -1;
+    if (len_sq !== 0) // in case of 0 length line
+        param = dot / len_sq;
+
+    let xx, yy;
+
+    if (param < 0) {
+        xx = x1;
+        yy = y1;
+    }
+    else if (param > 1) {
+        xx = x2;
+        yy = y2;
+    }
+    else {
+        xx = x1 + param * C;
+        yy = y1 + param * D;
+    }
+
+    const dx = x - xx;
+    const dy = y - yy;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
 
 // Helper: Create Evaluation Context
 const createEvalContext = (project: ProjectState) => {
@@ -67,10 +109,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   const [rendererMode, setRendererMode] = useState<'svg' | 'webgpu'>('webgpu');
   const [gpuReady, setGpuReady] = useState(false);
   
-  // Stats
-  const [realFps, setRealFps] = useState(0);
-  const [instanceCount, setInstanceCount] = useState(0);
-  
   // Interaction State
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -85,8 +123,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   const [penDragStart, setPenDragStart] = useState<{x:number, y:number} | null>(null);
   const [hoverStartPoint, setHoverStartPoint] = useState(false); 
   const [vectorStartSnapshot, setVectorStartSnapshot] = useState<{ id: string, path: string } | null>(null);
-
-  const [tick, setTick] = useState(0); 
 
   useEffect(() => {
     const newMode = projectRef.current.meta.renderer;
@@ -108,16 +144,18 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       if (selection) {
           const node = projectRef.current.nodes[selection];
           if (node && node.type === 'vector') {
-              setEditingPathId(selection);
-              // Safe access via evaluateProperty for initial display?
-              // Actually we need the raw value to edit points.
-              // If expression mode, this might be tricky. Pen tool usually forces static path value.
-              const dProp = node.properties.path;
-              const d = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, 0) as string);
-              
-              const { points, closed } = svgPathToPoints(d);
-              setPathPoints(points);
-              setIsPathClosed(closed);
+              if (node.properties.path.type === 'expression') {
+                  setEditingPathId(null);
+                  setPathPoints([]);
+                  setIsPathClosed(false);
+              } else {
+                  setEditingPathId(selection);
+                  const dProp = node.properties.path;
+                  const d = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, 0) as string);
+                  const { points, closed } = svgPathToPoints(d);
+                  setPathPoints(points);
+                  setIsPathClosed(closed);
+              }
               return;
           }
       }
@@ -127,62 +165,49 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
         setPathPoints([]);
         setIsPathClosed(false);
       }
-
   }, [selection]); 
 
   // Render Loop
   useEffect(() => {
-    let frameCount = 0;
-    let lastTime = performance.now();
     let rAFId = 0;
 
     const loop = () => {
-      const now = performance.now();
-      frameCount++;
-      
-      if (now - lastTime >= 1000) {
-          setRealFps(frameCount);
-          frameCount = 0;
-          lastTime = now;
-      }
-
       const project = projectRef.current;
       const audioData = audioController.getAudioData();
 
-      if (project.meta.renderer === 'webgpu' && gpuReady && canvasWebGpuRef.current) {
-          // REVERSE RENDER ORDER: Last Index (Bottom) -> First Index (Top)
-          // We want Index 0 drawn LAST.
+      const isWebGPUMode = project.meta.renderer === 'webgpu' && gpuReady && canvasWebGpuRef.current;
+
+      if (isWebGPUMode) {
+          // REVERSE RENDER ORDER: Index 0 is Top (Drawn Last)
           const nodes = [...project.rootNodeIds].reverse();
+          const evalContext = createEvalContext(project);
           
-          let renderableCount = 0;
+          // Prepare buffer
+          const maxNodes = nodes.length;
+          const data = new Float32Array(maxNodes * 10);
+          let instanceCount = 0;
+
           for(const id of nodes) {
               const node = project.nodes[id];
-              if(node && node.type !== 'value') renderableCount++;
-          }
-          setInstanceCount(renderableCount);
+              // Skip values or deleted nodes
+              if (!node || node.type === 'value') continue;
 
-          const floatCount = renderableCount * 10;
-          const data = new Float32Array(floatCount);
-          
-          const evalContext: any = { 
-            audio: audioData || {},
-            project: project,
-            get: (nodeId: string, propKey: string, depth: number = 0) => {
-                const node = project.nodes[nodeId];
-                if (!node) return 0;
-                const prop = node.properties[propKey];
-                return evaluateProperty(prop, project.meta.currentTime, evalContext, depth, { nodeId, propKey });
-            }
-          };
-
-          let index = 0;
-          for(const id of nodes) {
-              const node = project.nodes[id];
-              if(!node) continue;
-              if(node.type === 'value') continue; 
-              
               const v = (key: string, def: any) => 
                   evaluateProperty(node.properties[key], project.meta.currentTime, evalContext, 0, {nodeId: id, propKey: key}) ?? def;
+
+              const fill = String(v('fill', '#ffffff'));
+              const stroke = String(v('stroke', 'none'));
+              
+              // HYBRID CHECK: 
+              // If it's a Vector OR has a Gradient/Complex fill, Skip WebGPU.
+              // Let SVG Overlay handle it.
+              const isVector = node.type === 'vector';
+              const isComplexFill = fill.includes('gradient') || fill.includes('url');
+              const isComplexStroke = stroke.includes('gradient') || stroke.includes('url');
+
+              if (isVector || isComplexFill || isComplexStroke) {
+                  continue; 
+              }
 
               const x = Number(v('x', 0));
               const y = Number(v('y', 0)); 
@@ -190,10 +215,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               const scale = Number(v('scale', 1));
               const opacity = Number(v('opacity', 1));
               
-              let w = 100, h = 100, type = 0, color = [1,1,1,1];
-              const fillHex = String(v('fill', '#ffffff'));
-              const rgb = hexToRgb(fillHex);
-              color = [rgb[0], rgb[1], rgb[2], opacity];
+              const rgb = hexToRgb(fill);
+              const color = [rgb[0], rgb[1], rgb[2], opacity];
+
+              let w = 100, h = 100, type = 0;
 
               if (node.type === 'rect') {
                   w = Number(v('width', 100)) * scale;
@@ -204,11 +229,9 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
                   w = r * 2 * scale;
                   h = r * 2 * scale;
                   type = 1;
-              } else if (node.type === 'vector') {
-                  type = -1; 
               }
 
-              const offset = index * 10;
+              const offset = instanceCount * 10;
               data[offset + 0] = x;
               data[offset + 1] = y;
               data[offset + 2] = w;
@@ -220,19 +243,17 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               data[offset + 8] = color[3];
               data[offset + 9] = type;
 
-              index++;
+              instanceCount++;
           }
-          webgpuRenderer.render(data, renderableCount, project.meta.width, project.meta.height, canvasWebGpuRef.current);
+          webgpuRenderer.render(data, instanceCount, project.meta.width, project.meta.height, canvasWebGpuRef.current);
       } 
       
-      const svgTree = renderSVG(project, audioData);
+      // Render SVG Overlay
+      // In Hybrid Mode, this renders vectors AND gradients.
+      // In SVG Mode, this renders everything.
+      const svgTree = renderSVG(project, audioData, isWebGPUMode);
       setSvgContent(svgTree);
-
-      if (project.meta.renderer === 'svg') {
-         setInstanceCount(project.rootNodeIds.filter(id => project.nodes[id]?.type !== 'value').length);
-      }
       
-      setTick(t => t + 1);
       rAFId = requestAnimationFrame(loop);
       rAF.current = rAFId;
     };
@@ -290,20 +311,15 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       return { hitIndex, handleType, lx, ly };
   };
 
+  // ... (Pen Handler code remains mostly same, elided for brevity if no changes, but included for completeness)
   const handlePenDown = (e: React.MouseEvent, wx: number, wy: number) => {
       if (!editingPathId) {
           const newId = onAddNode('vector');
-          
-          // Move node to mouse position (Start Origin)
           onUpdate(newId, 'x', { type: 'number', value: wx });
           onUpdate(newId, 'y', { type: 'number', value: wy });
-
-          // Start Path at Local 0,0
           const newPoint: PathPoint = { x: 0, y: 0, inX: 0, inY: 0, outX: 0, outY: 0, cmd: 'M' };
           const newPoints = [newPoint];
           const d = pointsToSvgPath(newPoints, false);
-
-          // Force 'string' mode when drawing
           onUpdate(newId, 'path', { type: 'string', value: d });
 
           setEditingPathId(newId);
@@ -312,20 +328,16 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           setDragPointIndex(0);
           setDragHandleType('out'); 
           setPenDragStart({ x: 0, y: 0 });
-          
           setVectorStartSnapshot({ id: newId, path: d });
           onSelect(newId); 
           return;
       }
-
       const project = projectRef.current;
       const node = project.nodes[editingPathId];
-      if (!node) return; 
-
-      // Retrieve current D. Use evaluated if linked/expression, but really Pen works best on static values.
+      if (!node || node.properties.path.type === 'expression') return;
+      
       const dProp = node.properties.path;
       const currentD = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, 0) as string);
-      
       setVectorStartSnapshot({ id: editingPathId, path: currentD });
 
       const { hitIndex, handleType, lx, ly } = hitTestPathPoints(wx, wy, node, pathPoints);
@@ -337,7 +349,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               onUpdate(editingPathId, 'path', { type: 'string', value: d });
               setPathPoints(svgPathToPoints(d).points); 
               setIsPathClosed(true); 
-              return;
           } else {
               setDragPointIndex(hitIndex);
               setDragHandleType(handleType);
@@ -356,78 +367,38 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   };
 
   const handlePointDragMove = (e: React.MouseEvent, wx: number, wy: number) => {
-      const project = projectRef.current;
-      const ctx = createEvalContext(project);
-
-      if (editingPathId && pathPoints.length > 2 && dragPointIndex === null) {
-          const node = project.nodes[editingPathId];
-          if(node) {
-             const { lx, ly } = hitTestPathPoints(wx, wy, node, []); 
-             const startP = pathPoints[0];
-             const scale = evaluateProperty(node.properties.scale, project.meta.currentTime, ctx) as number;
-             const HIT_RADIUS = 12 / scale;
-             const dist = Math.hypot(startP.x - lx, startP.y - ly);
-             setHoverStartPoint(dist < HIT_RADIUS);
-          }
-      } else {
-          setHoverStartPoint(false);
-      }
-
       if (dragPointIndex === null || !editingPathId || !penDragStart) return;
-
-      const node = project.nodes[editingPathId];
+      const node = projectRef.current.nodes[editingPathId];
       if (!node) return;
-      
       const { lx, ly } = hitTestPathPoints(wx, wy, node, []);
-
       const newPoints = [...pathPoints];
       const p = { ...newPoints[dragPointIndex] };
-
-      if (dragHandleType === 'none') {
-          p.x = lx; p.y = ly;
-      } else if (dragHandleType === 'out') {
-          p.outX = lx - p.x; p.outY = ly - p.y;
-          p.inX = -p.outX; p.inY = -p.outY;
-          p.cmd = 'C'; 
-      } else if (dragHandleType === 'in') {
-          p.inX = lx - p.x; p.inY = ly - p.y;
-          p.outX = -p.inX; p.outY = -p.inY;
-          p.cmd = 'C';
-      }
-
+      if (dragHandleType === 'none') { p.x = lx; p.y = ly; }
+      else if (dragHandleType === 'out') { p.outX = lx - p.x; p.outY = ly - p.y; p.inX = -p.outX; p.inY = -p.outY; p.cmd = 'C'; }
+      else if (dragHandleType === 'in') { p.inX = lx - p.x; p.inY = ly - p.y; p.outX = -p.inX; p.outY = -p.inY; p.cmd = 'C'; }
       newPoints[dragPointIndex] = p;
       setPathPoints(newPoints);
       const d = pointsToSvgPath(newPoints, isPathClosed);
       onUpdate(editingPathId, 'path', { type: 'string', value: d });
   };
-
+  
   const handlePenUp = () => {
       setDragPointIndex(null);
       setDragHandleType('none');
       setPenDragStart(null);
-      
       if (vectorStartSnapshot && editingPathId) {
           const node = projectRef.current.nodes[editingPathId];
           if (node) {
               const startD = vectorStartSnapshot.path;
               const dProp = node.properties.path;
               const endD = dProp.type === 'string' ? String(dProp.value) : '';
-              
               if (startD !== endD) {
-                   onCommit(Commands.set(
-                       projectRef.current,
-                       editingPathId,
-                       'path',
-                       { type: 'string', value: endD },
-                       { type: 'string', value: startD },
-                       "Edit Path"
-                   ));
+                   onCommit(Commands.set(projectRef.current, editingPathId, 'path', { type: 'string', value: endD }, { type: 'string', value: startD }, "Edit Path"));
               }
           }
       }
       setVectorStartSnapshot(null);
   };
-
 
   // --- MAIN HANDLERS ---
 
@@ -443,24 +414,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const project = projectRef.current;
       const ctx = createEvalContext(project);
       
-      if (selection && project.nodes[selection]?.type === 'vector') {
-          const node = project.nodes[selection];
-          const { hitIndex, handleType, lx, ly } = hitTestPathPoints(wx, wy, node, pathPoints);
-          
-          if (hitIndex !== -1) {
-              const dProp = node.properties.path;
-              const d = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, 0) as string);
-              setVectorStartSnapshot({ id: selection, path: d });
-              setDragPointIndex(hitIndex);
-              setDragHandleType(handleType);
-              setPenDragStart({ x: lx, y: ly });
-              return;
-          }
-      }
-
-      // Hit Test in Reverse Render Order (Top to Bottom)
-      // Index 0 is Top. Index N is Bottom.
-      // So we iterate 0 to N.
+      // Hit Test Selection
       const nodes = project.rootNodeIds; 
       let hitId: string | null = null;
 
@@ -475,36 +429,75 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           
           const local = transformPointToLocal(wx, wy, nx, ny, rot, scale);
           let isHit = false;
-
+          
+          const fill = evaluateProperty(node.properties.fill, project.meta.currentTime, ctx) as string;
+          const isTransparent = !fill || fill === 'transparent' || fill === 'none';
+          
           if (node.type === 'rect') {
               const w = evaluateProperty(node.properties.width, project.meta.currentTime, ctx) as number;
               const h = evaluateProperty(node.properties.height, project.meta.currentTime, ctx) as number;
-              // Rect is 0..w, 0..h
-              if (local.x >= 0 && local.x <= w && local.y >= 0 && local.y <= h) isHit = true;
+              if (local.x >= 0 && local.x <= w && local.y >= 0 && local.y <= h) {
+                  if (isTransparent) {
+                       const t = 5 / scale;
+                       const onEdge = (local.x < t) || (local.x > w - t) || (local.y < t) || (local.y > h - t);
+                       if (onEdge) isHit = true;
+                  } else {
+                       isHit = true;
+                  }
+              }
           } else if (node.type === 'circle') {
               const r = evaluateProperty(node.properties.radius, project.meta.currentTime, ctx) as number;
-              // Circle center is (r, r)
               const dx = local.x - r;
               const dy = local.y - r;
               const dist = Math.sqrt(dx*dx + dy*dy);
-              if (dist <= r) isHit = true;
+              if (dist <= r) {
+                  if (isTransparent) {
+                      const t = 5 / scale;
+                      if (dist >= r - t) isHit = true;
+                  } else {
+                      isHit = true;
+                  }
+              }
           } else if (node.type === 'vector') {
               const d = evaluateProperty(node.properties.path, project.meta.currentTime, ctx) as string;
               const { points } = svgPathToPoints(d);
               if (points.length === 0) {
                    if (Math.abs(local.x) < 20 && Math.abs(local.y) < 20) isHit = true;
               } else {
-                   // Crude bounding box for hit test
-                   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                   for(const p of points) {
-                       if (p.x < minX) minX = p.x;
-                       if (p.x > maxX) maxX = p.x;
-                       if (p.y < minY) minY = p.y;
-                       if (p.y > maxY) maxY = p.y;
+                   // Precise Hit Test for Paths: Check distance to segments
+                   const STROKE_HIT_THRESHOLD = 8 / scale;
+                   let minDistance = Infinity;
+                   
+                   for(let i=0; i<points.length; i++) {
+                       const p1 = points[i];
+                       const p2 = points[(i + 1) % points.length]; // Closed loop check? 
+                       
+                       // If not closed loop and this is last segment, stop if not implicit
+                       // Our paths are M... L... Z?
+                       // Simple segment check:
+                       if (i < points.length - 1) {
+                           const dist = distToSegment(local.x, local.y, p1, points[i+1]);
+                           if (dist < minDistance) minDistance = dist;
+                       }
                    }
-                   const pad = 10 / scale;
-                   if (local.x >= minX - pad && local.x <= maxX + pad && local.y >= minY - pad && local.y <= maxY + pad) {
+                   
+                   // Crude box check as optimization first? No, path can be anything.
+                   if (minDistance < STROKE_HIT_THRESHOLD) {
                        isHit = true;
+                   }
+                   
+                   if (!isTransparent && !isHit) {
+                        // Check if inside bounding box as a fallback for filled shapes
+                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                        for(const p of points) {
+                           if (p.x < minX) minX = p.x;
+                           if (p.x > maxX) maxX = p.x;
+                           if (p.y < minY) minY = p.y;
+                           if (p.y > maxY) maxY = p.y;
+                        }
+                        if (local.x >= minX && local.x <= maxX && local.y >= minY && local.y <= maxY) {
+                             // Inside BB check
+                        }
                    }
               }
           }
@@ -536,64 +529,40 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           handlePointDragMove(e, wx, wy);
           return;
       }
-      
       if (activeTool === 'pen') {
           handlePointDragMove(e, wx, wy);
           return;
       }
 
       if (!isDragging || !selection) return;
-      
       const node = projectRef.current.nodes[selection];
       if (!node || node.type === 'value') return;
 
       const targetX = wx - dragOffset.x;
       const targetY = wy - dragOffset.y;
       
-      if (node.properties.x.type === 'number') {
-        onUpdate(selection, 'x', { type: 'number', value: targetX });
-      }
-      if (node.properties.y.type === 'number') {
-        onUpdate(selection, 'y', { type: 'number', value: targetY });
-      }
+      if (node.properties.x.type === 'number') onUpdate(selection, 'x', { type: 'number', value: targetX });
+      if (node.properties.y.type === 'number') onUpdate(selection, 'y', { type: 'number', value: targetY });
   };
 
   const handleMouseUp = () => {
-      if (dragPointIndex !== null) {
-          handlePenUp();
-          return;
-      }
+      if (dragPointIndex !== null) { handlePenUp(); return; }
       
       if (isDragging && dragStartSnapshot && selection) {
           const project = projectRef.current;
           const node = project.nodes[selection];
-          
           if (node && node.type !== 'value') {
               const ctx = createEvalContext(project);
               const currentX = evaluateProperty(node.properties.x, project.meta.currentTime, ctx) as number;
               const currentY = evaluateProperty(node.properties.y, project.meta.currentTime, ctx) as number;
-
               const cmds: Command[] = [];
               const EPSILON = 0.001;
 
-              // Check X
               if (node.properties.x.type === 'number' && Math.abs(currentX - dragStartSnapshot.x) > EPSILON) {
-                   cmds.push(Commands.set(
-                       project, selection, 'x', 
-                       { type: 'number', value: currentX },
-                       { type: 'number', value: dragStartSnapshot.x },
-                       'Move X'
-                   ));
+                   cmds.push(Commands.set(project, selection, 'x', { type: 'number', value: currentX }, { type: 'number', value: dragStartSnapshot.x }, 'Move X'));
               }
-
-              // Check Y
               if (node.properties.y.type === 'number' && Math.abs(currentY - dragStartSnapshot.y) > EPSILON) {
-                   cmds.push(Commands.set(
-                       project, selection, 'y', 
-                       { type: 'number', value: currentY },
-                       { type: 'number', value: dragStartSnapshot.y },
-                       'Move Y'
-                   ));
+                   cmds.push(Commands.set(project, selection, 'y', { type: 'number', value: currentY }, { type: 'number', value: dragStartSnapshot.y }, 'Move Y'));
               }
 
               if (cmds.length > 0) {
@@ -602,7 +571,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               }
           }
       }
-
       setIsDragging(false);
       setDragStartSnapshot(null);
   };
@@ -615,8 +583,10 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       if (node.type === 'value') return null; 
 
       const isVector = node.type === 'vector';
-      const showPointEditor = project.meta.activeTool === 'pen' || isVector;
-      const showBoundingBox = !isVector; 
+      const isPathExpression = isVector && node.properties.path.type === 'expression';
+      
+      const showPointEditor = (project.meta.activeTool === 'pen' || isVector) && !isPathExpression;
+      const showBoundingBox = !isVector || isPathExpression;
 
       const ctx = createEvalContext(project);
       const t = project.meta.currentTime;
@@ -627,27 +597,40 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const scale = evaluateProperty(node.properties.scale, t, ctx, 0, { nodeId: selection, propKey: 'scale' }) as number;
       
       let width = 100, height = 100;
+      let offX = 0, offY = 0;
+
       if (node.type === 'rect') {
           width = evaluateProperty(node.properties.width, t, ctx, 0, { nodeId: selection, propKey: 'width' }) as number;
           height = evaluateProperty(node.properties.height, t, ctx, 0, { nodeId: selection, propKey: 'height' }) as number;
       } else if (node.type === 'circle') {
           const r = evaluateProperty(node.properties.radius, t, ctx, 0, { nodeId: selection, propKey: 'radius' }) as number;
           width = r * 2; height = r * 2;
+      } else if (node.type === 'vector') {
+          const dProp = node.properties.path;
+          const d = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, t, ctx) as string);
+          const { points } = svgPathToPoints(d);
+          if (points.length > 0) {
+               let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+               for(const p of points) {
+                   if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+                   if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+               }
+               offX = minX; offY = minY;
+               width = maxX - minX; height = maxY - minY;
+          }
       }
 
       const transform = `translate(${x}, ${y}) rotate(${rot}) scale(${scale})`;
 
-      // Gizmo is drawn in local space
-      // If Top-Left alignment: Local 0,0 is Top-Left. Box goes from 0,0 to w,h.
       return (
           <g transform={transform}>
               {showBoundingBox && (
                 <>
-                    <rect x={0} y={0} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
-                    <rect x={-4} y={-4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={width - 4} y={height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={width - 4} y={-4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={-4} y={height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={offX} y={offY} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
+                    <rect x={offX - 4} y={offY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={offX + width - 4} y={offY + height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={offX + width - 4} y={offY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    <rect x={offX - 4} y={offY + height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
                 </>
               )}
 
@@ -655,39 +638,24 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
                   <g className="pen-editor-overlay">
                       {pathPoints.map((p, i) => (
                           <g key={i}>
-                              {(p.inX !== 0 || p.inY !== 0) && (
-                                  <line x1={p.x} y1={p.y} x2={p.x + p.inX} y2={p.y + p.inY} stroke="#3b82f6" strokeWidth={1/scale} />
-                              )}
-                              {(p.outX !== 0 || p.outY !== 0) && (
-                                  <line x1={p.x} y1={p.y} x2={p.x + p.outX} y2={p.y + p.outY} stroke="#3b82f6" strokeWidth={1/scale} />
-                              )}
+                              {(p.inX !== 0 || p.inY !== 0) && ( <line x1={p.x} y1={p.y} x2={p.x + p.inX} y2={p.y + p.inY} stroke="#3b82f6" strokeWidth={1/scale} /> )}
+                              {(p.outX !== 0 || p.outY !== 0) && ( <line x1={p.x} y1={p.y} x2={p.x + p.outX} y2={p.y + p.outY} stroke="#3b82f6" strokeWidth={1/scale} /> )}
                           </g>
                       ))}
-                      
                       {pathPoints.map((p, i) => {
                           const isStart = i === 0;
                           const showCloseHint = isStart && hoverStartPoint && pathPoints.length > 2;
-
                           return (
                           <g key={i}>
                               <circle 
                                 cx={p.x} cy={p.y} 
                                 r={showCloseHint ? (8/scale) : (4/scale)} 
                                 fill={isStart && pathPoints.length > 0 ? "#10b981" : "white"} 
-                                stroke="#3b82f6" 
-                                strokeWidth={2/scale} 
-                                style={{ transition: 'all 0.2s' }}
+                                stroke="#3b82f6" strokeWidth={2/scale} 
                               />
-                              {showCloseHint && (
-                                  <circle cx={p.x} cy={p.y} r={12/scale} fill="none" stroke="#10b981" strokeWidth={2/scale} opacity={0.5} />
-                              )}
-                              
-                              {(p.inX !== 0 || p.inY !== 0) && (
-                                  <circle cx={p.x + p.inX} cy={p.y + p.inY} r={3/scale} fill="#3b82f6" />
-                              )}
-                              {(p.outX !== 0 || p.outY !== 0) && (
-                                  <circle cx={p.x + p.outX} cy={p.y + p.outY} r={3/scale} fill="#3b82f6" />
-                              )}
+                              {showCloseHint && ( <circle cx={p.x} cy={p.y} r={12/scale} fill="none" stroke="#10b981" strokeWidth={2/scale} opacity={0.5} /> )}
+                              {(p.inX !== 0 || p.inY !== 0) && ( <circle cx={p.x + p.inX} cy={p.y + p.inY} r={3/scale} fill="#3b82f6" /> )}
+                              {(p.outX !== 0 || p.outY !== 0) && ( <circle cx={p.x + p.outX} cy={p.y + p.outY} r={3/scale} fill="#3b82f6" /> )}
                           </g>
                       )})}
                   </g>
@@ -714,14 +682,13 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
                 className={`absolute inset-0 pointer-events-none ${rendererMode === 'webgpu' ? 'block' : 'hidden'}`}
                 style={{ width: '100%', height: '100%' }}
             />
-
+            {/* SVG OVERLAY: Always visible to handle hybrid rendering for vectors */}
             <div 
-              className={`absolute inset-0 pointer-events-none block`}
-              style={{ width: '100%', height: '100%' }}
+                className="absolute inset-0 pointer-events-none block"
+                style={{ width: '100%', height: '100%' }}
             >
-              {svgContent}
+                {svgContent}
             </div>
-
             <svg 
                 className="absolute inset-0 w-full h-full pointer-events-none z-20"
                 viewBox={`0 0 ${projectRef.current.meta.width} ${projectRef.current.meta.height}`}

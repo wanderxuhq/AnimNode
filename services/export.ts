@@ -1,15 +1,16 @@
+
 import { ProjectState } from '../types';
-import { evaluateProperty } from './engine';
+import { evaluateProperty, parseCssGradient, GradientDef } from './engine';
 import { audioController } from './audio';
 
 export const generateSVGString = (project: ProjectState): string => {
   const { width, height, currentTime } = project.meta;
   const audioData = audioController.getAudioData();
 
-  // 1. Create Context (Duplicated from engine.ts to ensure consistency)
+  // 1. Create Context
   const evalContext: any = { 
       audio: audioData || {},
-      project: project, // Inject project for global variable lookup
+      project: project, 
       get: (nodeId: string, propKey: string, depth: number = 0) => {
           const node = project.nodes[nodeId];
           if (!node) return 0;
@@ -19,9 +20,12 @@ export const generateSVGString = (project: ProjectState): string => {
   };
 
   let elements = '';
+  const gradients: GradientDef[] = [];
 
   // 2. Render Nodes
-  project.rootNodeIds.forEach(nodeId => {
+  const renderOrder = [...project.rootNodeIds].reverse();
+
+  renderOrder.forEach(nodeId => {
     const node = project.nodes[nodeId];
     if (!node) return;
 
@@ -33,35 +37,64 @@ export const generateSVGString = (project: ProjectState): string => {
     const rotation = v('rotation', 0);
     const scale = v('scale', 1);
     const opacity = v('opacity', 1);
-    const fill = v('fill', 'none');
-    const stroke = v('stroke', 'none');
+    let fill = v('fill', 'none');
+    let stroke = v('stroke', 'none');
     const strokeWidth = v('strokeWidth', 0);
     
-    // SVG transform order matters.
+    // Gradient Handling
+    if (typeof fill === 'string' && (fill.startsWith('linear-gradient') || fill.startsWith('radial-gradient'))) {
+        const gradId = `grad_fill_${nodeId}`;
+        const def = parseCssGradient(fill, gradId);
+        if (def) {
+            gradients.push(def);
+            fill = `url(#${gradId})`;
+        }
+    }
+    if (typeof stroke === 'string' && (stroke.startsWith('linear-gradient') || stroke.startsWith('radial-gradient'))) {
+        const gradId = `grad_stroke_${nodeId}`;
+        const def = parseCssGradient(stroke, gradId);
+        if (def) {
+            gradients.push(def);
+            stroke = `url(#${gradId})`;
+        }
+    }
+    
     const transform = `translate(${x}, ${y}) rotate(${rotation}) scale(${scale})`;
     
     if (node.type === 'rect') {
       const w = v('width', 100);
       const h = v('height', 100);
-      // Use 0,0 for top-left alignment
-      elements += `<rect x="0" y="0" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
+      elements += `<rect x="0" y="0" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />\n`;
     } 
     else if (node.type === 'circle') {
       const r = v('radius', 50);
-      // Center at (r,r) implies the bounding box starts at (0,0)
-      elements += `<circle cx="${r}" cy="${r}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
+      elements += `<circle cx="${r}" cy="${r}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />\n`;
     } 
     else if (node.type === 'vector') {
         const path = v('path', '');
-        // Note: attribute is stroke-width, not strokeWidth
-        elements += `<path d="${path}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />`;
+        elements += `<path d="${path}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />\n`;
     }
   });
 
-  // 3. Construct Final SVG with explicit transparent background style
-  // Removed translate transform to match top-left origin
+  // 3. Construct Defs String
+  let defsString = '';
+  if (gradients.length > 0) {
+      defsString += '<defs>\n';
+      gradients.forEach(g => {
+          const attrs = Object.entries(g.attrs).map(([k,v]) => `${k}="${v}"`).join(' ');
+          defsString += `<${g.type} id="${g.id}" ${attrs}>\n`;
+          g.stops.forEach(s => {
+              defsString += `  <stop offset="${s.offset}" stop-color="${s.color}" />\n`;
+          });
+          defsString += `</${g.type}>\n`;
+      });
+      defsString += '</defs>\n';
+  }
+
+  // 4. Construct Final SVG
   return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="background-color: transparent;" xmlns="http://www.w3.org/2000/svg">
+    ${defsString}
     ${elements}
 </svg>`;
 };
@@ -89,7 +122,6 @@ export const exportToPNG = (project: ProjectState) => {
   const url = URL.createObjectURL(blob);
   
   const img = new Image();
-  // Allow cross-origin to prevent canvas tainting (though local blob is usually safe)
   img.crossOrigin = "anonymous";
   
   img.onload = () => {
@@ -97,11 +129,9 @@ export const exportToPNG = (project: ProjectState) => {
     canvas.width = project.meta.width;
     canvas.height = project.meta.height;
     
-    // Explicitly request alpha channel
     const ctx = canvas.getContext('2d', { alpha: true });
     
     if (ctx) {
-        // Force clear to transparent before drawing
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0);
         

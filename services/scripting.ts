@@ -1,8 +1,8 @@
-import { ProjectState, Command, Property, PropertyType } from '../types';
+import { ProjectState, Command, Property, PropertyType, Keyframe } from '../types';
 import { Commands } from './commands';
 import { evaluateProperty } from './engine';
+import { PathBuilder } from './path';
 
-// Helper to extract function body for expressions
 const extractBody = (fn: Function | string): string => {
     let str = fn.toString().trim();
     const arrowRegex = /^(\([^\)]*\)|[a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>/;
@@ -23,9 +23,6 @@ const extractBody = (fn: Function | string): string => {
     return str; 
 };
 
-/**
- * Transforms user script to inject metadata.
- */
 const transformScript = (code: string): string => {
     const regex = /(const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*createVariable\s*\(/g;
     return code.replace(regex, (match, keyword, name) => {
@@ -33,9 +30,6 @@ const transformScript = (code: string): string => {
     });
 };
 
-/**
- * Creates a sandbox context for user scripts.
- */
 export const createScriptContext = (
     projectGetter: () => ProjectState,
     commit: (cmd: Command) => void,
@@ -81,9 +75,14 @@ export const createScriptContext = (
                 
                 if (!node) return undefined;
                 
-                if (typeof prop === 'string' && prop in node.properties) {
+                let actualProp = typeof prop === 'string' ? prop : '';
+                if (node.type === 'vector' && actualProp === 'd') {
+                    actualProp = 'path';
+                }
+
+                if (actualProp && actualProp in node.properties) {
                     const ctx: any = { project, get: (nid: string, pid: string) => evaluateProperty(project.nodes[nid]?.properties[pid], project.meta.currentTime, ctx) };
-                    return evaluateProperty(node.properties[prop], project.meta.currentTime, ctx);
+                    return evaluateProperty(node.properties[actualProp], project.meta.currentTime, ctx);
                 }
                 
                 if (node.type === 'value' && node.properties.value) {
@@ -91,7 +90,7 @@ export const createScriptContext = (
                      const innerValue = evaluateProperty(node.properties.value, project.meta.currentTime, ctx);
                      
                      if (innerValue && (typeof innerValue === 'object' || typeof innerValue === 'function')) {
-                         if (prop in innerValue) {
+                         if (typeof prop === 'string' && prop in innerValue) {
                              const val = (innerValue as any)[prop];
                              if (typeof val === 'function') return val.bind(innerValue);
                              return val;
@@ -133,6 +132,10 @@ export const createScriptContext = (
                     return false;
                 }
 
+                if (node.type === 'vector' && prop === 'd') {
+                    prop = 'path';
+                }
+
                 if (!node.properties[prop]) {
                     log('warn', [`Property '${prop}' does not exist on node '${currentRefId}'`]);
                     return false;
@@ -141,6 +144,11 @@ export const createScriptContext = (
                 let propUpdate: Partial<Property> = {};
                 let isVariableProxy = false;
                 let proxyId = '';
+
+                // Handle PathBuilder objects
+                if (value instanceof PathBuilder) {
+                    value = value.toString();
+                }
 
                 if (value && (typeof value === 'object' || typeof value === 'function')) {
                     try {
@@ -155,7 +163,6 @@ export const createScriptContext = (
                 if (isVariableProxy) {
                     const sourceNode = projectGetter().nodes[proxyId];
                     if (sourceNode && sourceNode.type === 'value') {
-                        // Check type of the source variable's content
                         const sourceProp = sourceNode.properties.value;
                         const sourceType = sourceProp.type;
                         
@@ -168,8 +175,6 @@ export const createScriptContext = (
                              const ctx: any = { project: projectGetter(), get: (nid: string, pid: string) => evaluateProperty(projectGetter().nodes[nid]?.properties[pid], projectGetter().meta.currentTime, ctx) };
                              const snapshotValue = evaluateProperty(sourceNode.properties.value, projectGetter().meta.currentTime, ctx);
                              
-                             // We don't strictly know the type here if it's dynamic, 
-                             // but we can infer from the snapshot value type.
                              let inferredType: PropertyType = 'number';
                              if (typeof snapshotValue === 'string') inferredType = 'string';
                              else if (typeof snapshotValue === 'boolean') inferredType = 'boolean';
@@ -190,7 +195,6 @@ export const createScriptContext = (
                         type: 'expression',
                         value: extractBody(value),
                     };
-                    // Special case: setting a variable node to a function value
                     if (node.type === 'value' && prop === 'value') {
                          propUpdate.type = 'expression';
                     }
@@ -228,8 +232,7 @@ export const createScriptContext = (
                 }
 
                 try {
-                    // Pass current project state (workingState) to Commands.set
-                    const cmd = Commands.set(project, currentRefId, prop, propUpdate, undefined, `Script: Set ${prop}`);
+                    const cmd = Commands.set(projectGetter(), currentRefId, prop, propUpdate, undefined, `Script: Set ${prop}`);
                     commit(cmd);
                     return true;
                 } catch (e: any) {
@@ -262,7 +265,6 @@ export const createScriptContext = (
     const context: any = {};
     const currentProject = projectGetter();
     
-    // Register existing nodes
     currentProject.rootNodeIds.forEach(id => {
         if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(id)) {
             context[id] = getProxy(id);
@@ -274,8 +276,21 @@ export const createScriptContext = (
     context.error = (...args: any[]) => log('error', args);
     context.Math = Math;
     context.Date = Date;
-    context.t = 0;
-    context.ctx = {}; 
+    context.t = 0; 
+    context.Path = PathBuilder; // Expose Path Builder
+    context.ctx = {
+        get: (nodeId: string, propKey: string) => {
+             const project = projectGetter();
+             const node = project.nodes[nodeId];
+             if(!node) return 0;
+             const prop = node.properties[propKey];
+             if(prop) {
+                 if (prop.type === 'number') return Number(prop.value);
+                 return prop.value;
+             }
+             return 0;
+        }
+    };
     
     context.addNode = (type: 'rect'|'circle'|'vector') => {
         const { command, nodeId } = Commands.addNode(type, projectGetter());
@@ -356,6 +371,45 @@ export const createScriptContext = (
         }
     };
 
+    context.addKeyframe = (nodeOrId: any, propKey: string, value: any, time?: number) => {
+        const id = (typeof nodeOrId === 'string') ? nodeOrId : (nodeOrId as any)[PROXY_ID_SYMBOL];
+        if (!id) return;
+        
+        const project = projectGetter();
+        const node = project.nodes[id];
+        if (!node || !node.properties[propKey]) return;
+
+        const targetTime = time !== undefined ? time : project.meta.currentTime;
+        const prop = node.properties[propKey];
+        
+        const oldKeyframes = prop.keyframes || [];
+        const existingIndex = oldKeyframes.findIndex(k => Math.abs(k.time - targetTime) < 0.01);
+        
+        let newKeyframes = [...oldKeyframes];
+        const newKeyframe: Keyframe = {
+             id: crypto.randomUUID(),
+             time: targetTime,
+             value: value,
+             easing: 'linear'
+        };
+
+        if (existingIndex >= 0) {
+             newKeyframes[existingIndex] = { ...newKeyframes[existingIndex], value: value };
+        } else {
+             newKeyframes.push(newKeyframe);
+             newKeyframes.sort((a, b) => a.time - b.time);
+        }
+
+        const propUpdate = {
+             type: prop.type, 
+             value: value,
+             keyframes: newKeyframes
+        };
+
+        const cmd = Commands.set(project, id, propKey, propUpdate, undefined, `Add Keyframe ${propKey}`);
+        commit(cmd);
+    };
+
     context.clear = () => {
         const cmd = Commands.clearProject(projectGetter());
         commit(cmd);
@@ -365,19 +419,6 @@ export const createScriptContext = (
     return context;
 };
 
-/**
- * Executes a script in a transactional way.
- * 
- * To ensure atomicity (all or nothing) and consistency (script sees its own updates),
- * we use a temporary 'workingState'.
- * 
- * 1. 'workingState' starts as a copy of the current project state.
- * 2. Commands executed by the script (addNode, set, etc.) are applied immediately to 'workingState'.
- *    This allows subsequent lines in the script to see these changes (e.g. adding a node then renaming it).
- * 3. These commands are also collected in 'pendingCommands'.
- * 4. If script execution succeeds, we bundle 'pendingCommands' into a single Batch Command
- *    and commit it to the real project history.
- */
 export const executeScript = (
     code: string, 
     projectGetter: () => ProjectState, 
@@ -386,23 +427,16 @@ export const executeScript = (
 ) => {
     const transformedCode = transformScript(code);
     
-    // 1. Create a working copy of the state
-    // We must use this workingState for all reads during script execution.
     let workingState = projectGetter();
     const pendingCommands: Command[] = [];
 
-    // 2. Define a local commit function that updates working state & collects commands
     const localCommit = (cmd: Command) => {
         pendingCommands.push(cmd);
-        // Apply command to local state immediately so script can see the effect
         workingState = cmd.redo(workingState);
     };
 
-    // 3. Define a local getter that returns the working state
     const localGetter = () => workingState;
 
-    // 4. Create context using local state handling
-    // IMPORTANT: We pass localGetter, not projectGetter
     const context = createScriptContext(localGetter, localCommit, (l, m) => logger.log(l, m));
     
     const paramNames = Object.keys(context);
@@ -412,7 +446,6 @@ export const executeScript = (
         const fn = new Function(...paramNames, `"use strict";\n${transformedCode}`);
         fn(...paramValues);
         
-        // 5. If successful, batch all commands into one "Run Script" transaction
         if (pendingCommands.length > 0) {
             commit(Commands.batch(pendingCommands, "Run Script"));
         }
