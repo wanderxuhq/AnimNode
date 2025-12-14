@@ -18,8 +18,6 @@ interface ViewportProps {
 // Helper to convert hex to normalized rgb
 const hexToRgb = (hex: string) => {
     if (!hex || hex === 'transparent' || hex === 'none') return [0, 0, 0, 0];
-    
-    // Check if it's a gradient or url, if so, return transparent (let SVG handle it or fail gracefully)
     if (hex.includes('gradient') || hex.includes('url')) return [0, 0, 0, 0];
 
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -28,7 +26,7 @@ const hexToRgb = (hex: string) => {
         parseInt(result[2], 16) / 255,
         parseInt(result[3], 16) / 255,
         1
-    ] : [0, 0, 0, 1]; // Default to Black if parse fails, not Purple
+    ] : [0, 0, 0, 1];
 };
 
 // Helper: Transform Point
@@ -60,29 +58,18 @@ function distToSegment(lx: number, ly: number, p1: PathPoint, p2: PathPoint) {
     const dot = A * C + B * D;
     const len_sq = C * C + D * D;
     let param = -1;
-    if (len_sq !== 0) // in case of 0 length line
-        param = dot / len_sq;
+    if (len_sq !== 0) param = dot / len_sq;
 
     let xx, yy;
 
-    if (param < 0) {
-        xx = x1;
-        yy = y1;
-    }
-    else if (param > 1) {
-        xx = x2;
-        yy = y2;
-    }
-    else {
-        xx = x1 + param * C;
-        yy = y1 + param * D;
-    }
+    if (param < 0) { xx = x1; yy = y1; }
+    else if (param > 1) { xx = x2; yy = y2; }
+    else { xx = x1 + param * C; yy = y1 + param * D; }
 
     const dx = x - xx;
     const dy = y - yy;
     return Math.sqrt(dx * dx + dy * dy);
 }
-
 
 // Helper: Create Evaluation Context
 const createEvalContext = (project: ProjectState) => {
@@ -130,9 +117,8 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
     
     if (newMode === 'webgpu' && !gpuReady && canvasWebGpuRef.current) {
         webgpuRenderer.init(canvasWebGpuRef.current).then((success) => {
-            if(success) {
-                setGpuReady(true);
-            } else {
+            if(success) setGpuReady(true);
+            else {
                 console.error("Failed to init WebGPU");
                 setGpuReady(false);
             }
@@ -175,21 +161,19 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const project = projectRef.current;
       const audioData = audioController.getAudioData();
 
-      const isWebGPUMode = project.meta.renderer === 'webgpu' && gpuReady && canvasWebGpuRef.current;
+      const canvasEl = canvasWebGpuRef.current;
+      const isWebGPUMode = project.meta.renderer === 'webgpu' && gpuReady && !!canvasEl;
 
-      if (isWebGPUMode) {
-          // REVERSE RENDER ORDER: Index 0 is Top (Drawn Last)
+      if (isWebGPUMode && canvasEl) {
           const nodes = [...project.rootNodeIds].reverse();
           const evalContext = createEvalContext(project);
           
-          // Prepare buffer
           const maxNodes = nodes.length;
-          const data = new Float32Array(maxNodes * 10);
+          const data = new Float32Array(maxNodes * 16);
           let instanceCount = 0;
 
           for(const id of nodes) {
               const node = project.nodes[id];
-              // Skip values or deleted nodes
               if (!node || node.type === 'value') continue;
 
               const v = (key: string, def: any) => 
@@ -198,9 +182,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               const fill = String(v('fill', '#ffffff'));
               const stroke = String(v('stroke', 'none'));
               
-              // HYBRID CHECK: 
-              // If it's a Vector OR has a Gradient/Complex fill, Skip WebGPU.
-              // Let SVG Overlay handle it.
               const isVector = node.type === 'vector';
               const isComplexFill = fill.includes('gradient') || fill.includes('url');
               const isComplexStroke = stroke.includes('gradient') || stroke.includes('url');
@@ -231,26 +212,25 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
                   type = 1;
               }
 
-              const offset = instanceCount * 10;
+              const offset = instanceCount * 16; 
               data[offset + 0] = x;
               data[offset + 1] = y;
               data[offset + 2] = w;
               data[offset + 3] = h;
-              data[offset + 4] = rot;
-              data[offset + 5] = color[0];
-              data[offset + 6] = color[1];
-              data[offset + 7] = color[2];
-              data[offset + 8] = color[3];
+              data[offset + 4] = color[0];
+              data[offset + 5] = color[1];
+              data[offset + 6] = color[2];
+              data[offset + 7] = color[3];
+              data[offset + 8] = rot;
               data[offset + 9] = type;
-
+              data[offset + 10] = 0;
+              data[offset + 11] = 0;
+              
               instanceCount++;
           }
-          webgpuRenderer.render(data, instanceCount, project.meta.width, project.meta.height, canvasWebGpuRef.current);
+          webgpuRenderer.render(data, instanceCount, Math.floor(project.meta.width), Math.floor(project.meta.height), canvasEl);
       } 
       
-      // Render SVG Overlay
-      // In Hybrid Mode, this renders vectors AND gradients.
-      // In SVG Mode, this renders everything.
       const svgTree = renderSVG(project, audioData, isWebGPUMode);
       setSvgContent(svgTree);
       
@@ -269,9 +249,14 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
   const getMouseWorldPos = (e: React.MouseEvent) => {
       if (!containerRef.current) return { x: 0, y: 0 };
       const rect = containerRef.current.getBoundingClientRect();
-      const clientX = e.clientX - rect.left;
-      const clientY = e.clientY - rect.top;
-      return { x: clientX, y: clientY };
+      
+      // Since containerRef is now the inner element without border, 
+      // rect.left/top is the exact screen position of the content.
+      // No extra offsets needed.
+      return { 
+          x: e.clientX - rect.left, 
+          y: e.clientY - rect.top 
+      };
   };
 
   const hitTestPathPoints = (wx: number, wy: number, node: Node, points: PathPoint[]) => {
@@ -311,7 +296,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       return { hitIndex, handleType, lx, ly };
   };
 
-  // ... (Pen Handler code remains mostly same, elided for brevity if no changes, but included for completeness)
   const handlePenDown = (e: React.MouseEvent, wx: number, wy: number) => {
       if (!editingPathId) {
           const newId = onAddNode('vector');
@@ -400,8 +384,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       setVectorStartSnapshot(null);
   };
 
-  // --- MAIN HANDLERS ---
-
   const handleMouseDown = (e: React.MouseEvent) => {
       const { x: wx, y: wy } = getMouseWorldPos(e);
       const activeTool = projectRef.current.meta.activeTool;
@@ -414,7 +396,6 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const project = projectRef.current;
       const ctx = createEvalContext(project);
       
-      // Hit Test Selection
       const nodes = project.rootNodeIds; 
       let hitId: string | null = null;
 
@@ -436,10 +417,14 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
           if (node.type === 'rect') {
               const w = evaluateProperty(node.properties.width, project.meta.currentTime, ctx) as number;
               const h = evaluateProperty(node.properties.height, project.meta.currentTime, ctx) as number;
-              if (local.x >= 0 && local.x <= w && local.y >= 0 && local.y <= h) {
+              
+              const halfW = w / 2;
+              const halfH = h / 2;
+              
+              if (local.x >= -halfW && local.x <= halfW && local.y >= -halfH && local.y <= halfH) {
                   if (isTransparent) {
                        const t = 5 / scale;
-                       const onEdge = (local.x < t) || (local.x > w - t) || (local.y < t) || (local.y > h - t);
+                       const onEdge = (local.x < -halfW + t) || (local.x > halfW - t) || (local.y < -halfH + t) || (local.y > halfH - t);
                        if (onEdge) isHit = true;
                   } else {
                        isHit = true;
@@ -447,9 +432,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               }
           } else if (node.type === 'circle') {
               const r = evaluateProperty(node.properties.radius, project.meta.currentTime, ctx) as number;
-              const dx = local.x - r;
-              const dy = local.y - r;
-              const dist = Math.sqrt(dx*dx + dy*dy);
+              const dist = Math.sqrt(local.x*local.x + local.y*local.y);
               if (dist <= r) {
                   if (isTransparent) {
                       const t = 5 / scale;
@@ -464,41 +447,17 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
               if (points.length === 0) {
                    if (Math.abs(local.x) < 20 && Math.abs(local.y) < 20) isHit = true;
               } else {
-                   // Precise Hit Test for Paths: Check distance to segments
                    const STROKE_HIT_THRESHOLD = 8 / scale;
                    let minDistance = Infinity;
                    
                    for(let i=0; i<points.length; i++) {
                        const p1 = points[i];
-                       const p2 = points[(i + 1) % points.length]; // Closed loop check? 
-                       
-                       // If not closed loop and this is last segment, stop if not implicit
-                       // Our paths are M... L... Z?
-                       // Simple segment check:
                        if (i < points.length - 1) {
                            const dist = distToSegment(local.x, local.y, p1, points[i+1]);
                            if (dist < minDistance) minDistance = dist;
                        }
                    }
-                   
-                   // Crude box check as optimization first? No, path can be anything.
-                   if (minDistance < STROKE_HIT_THRESHOLD) {
-                       isHit = true;
-                   }
-                   
-                   if (!isTransparent && !isHit) {
-                        // Check if inside bounding box as a fallback for filled shapes
-                        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                        for(const p of points) {
-                           if (p.x < minX) minX = p.x;
-                           if (p.x > maxX) maxX = p.x;
-                           if (p.y < minY) minY = p.y;
-                           if (p.y > maxY) maxY = p.y;
-                        }
-                        if (local.x >= minX && local.x <= maxX && local.y >= minY && local.y <= maxY) {
-                             // Inside BB check
-                        }
-                   }
+                   if (minDistance < STROKE_HIT_THRESHOLD) isHit = true;
               }
           }
 
@@ -583,6 +542,7 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       if (node.type === 'value') return null; 
 
       const isVector = node.type === 'vector';
+      const isCircle = node.type === 'circle';
       const isPathExpression = isVector && node.properties.path.type === 'expression';
       
       const showPointEditor = (project.meta.activeTool === 'pen' || isVector) && !isPathExpression;
@@ -597,40 +557,66 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
       const scale = evaluateProperty(node.properties.scale, t, ctx, 0, { nodeId: selection, propKey: 'scale' }) as number;
       
       let width = 100, height = 100;
-      let offX = 0, offY = 0;
+      let minX = 0, minY = 0, maxX = 0, maxY = 0;
 
       if (node.type === 'rect') {
           width = evaluateProperty(node.properties.width, t, ctx, 0, { nodeId: selection, propKey: 'width' }) as number;
           height = evaluateProperty(node.properties.height, t, ctx, 0, { nodeId: selection, propKey: 'height' }) as number;
-      } else if (node.type === 'circle') {
+          minX = -width/2; maxX = width/2;
+          minY = -height/2; maxY = height/2;
+      } else if (isCircle) {
           const r = evaluateProperty(node.properties.radius, t, ctx, 0, { nodeId: selection, propKey: 'radius' }) as number;
           width = r * 2; height = r * 2;
+          minX = -r; maxX = r;
+          minY = -r; maxY = r;
       } else if (node.type === 'vector') {
           const dProp = node.properties.path;
           const d = dProp.type === 'string' ? String(dProp.value) : (evaluateProperty(dProp, t, ctx) as string);
           const { points } = svgPathToPoints(d);
           if (points.length > 0) {
-               let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+               minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
                for(const p of points) {
                    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
                    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
                }
-               offX = minX; offY = minY;
-               width = maxX - minX; height = maxY - minY;
           }
       }
 
       const transform = `translate(${x}, ${y}) rotate(${rot}) scale(${scale})`;
+      const boxW = maxX - minX;
+      const boxH = maxY - minY;
+      
+      // Ensure pixel-perfect Crosshair
+      const cx = Math.round(x);
+      const cy = Math.round(y);
 
       return (
+        <>
           <g transform={transform}>
               {showBoundingBox && (
                 <>
-                    <rect x={offX} y={offY} width={width} height={height} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2"/>
-                    <rect x={offX - 4} y={offY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={offX + width - 4} y={offY + height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={offX + width - 4} y={offY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
-                    <rect x={offX - 4} y={offY + height - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} />
+                    {isCircle ? (
+                        <circle cx={0} cy={0} r={boxW/2} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2" shapeRendering="geometricPrecision" />
+                    ) : (
+                        <rect x={minX} y={minY} width={boxW} height={boxH} fill="none" stroke="#3b82f6" strokeWidth={2 / scale} strokeDasharray="4 2" shapeRendering="crispEdges"/>
+                    )}
+                    
+                    {/* Handles */}
+                    {isCircle ? (
+                       <>
+                         <rect x={-boxW/2 - 4} y={-4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                         <rect x={boxW/2 - 4} y={-4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                         <rect x={-4} y={-boxH/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                         <rect x={-4} y={boxH/2 - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                       </>
+                    ) : (
+                       <>
+                        <rect x={minX - 4} y={minY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                        <rect x={maxX - 4} y={maxY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                        <rect x={maxX - 4} y={minY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                        <rect x={minX - 4} y={maxY - 4} width={8} height={8} fill="#3b82f6" stroke="white" strokeWidth={1} shapeRendering="crispEdges" />
+                       </>
+                    )}
                 </>
               )}
 
@@ -661,40 +647,56 @@ export const Viewport: React.FC<ViewportProps> = ({ projectRef, onSelect, onUpda
                   </g>
               )}
           </g>
+
+          {/* Anchor Point Indicator (Red Crosshair) */}
+          <path 
+            d={`M ${cx-6} ${cy} L ${cx+6} ${cy} M ${cx} ${cy-6} L ${cx} ${cy+6}`} 
+            stroke="#ef4444" 
+            strokeWidth={1} 
+            shapeRendering="crispEdges"
+            vectorEffect="non-scaling-stroke" 
+            filter="drop-shadow(0 0 1px rgba(0,0,0,0.8))"
+          />
+        </>
       );
   };
 
   return (
     <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
-        <div 
-            ref={containerRef}
-            className={`relative shadow-2xl border border-zinc-800 bg-zinc-900 overflow-hidden ${projectRef.current.meta.activeTool === 'pen' ? 'cursor-crosshair' : 'cursor-default'}`}
-            style={{ width: projectRef.current.meta.width, height: projectRef.current.meta.height }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-        >
-             <canvas 
-                ref={canvasWebGpuRef} 
-                width={projectRef.current.meta.width} 
-                height={projectRef.current.meta.height}
-                className={`absolute inset-0 pointer-events-none ${rendererMode === 'webgpu' ? 'block' : 'hidden'}`}
-                style={{ width: '100%', height: '100%' }}
-            />
-            {/* SVG OVERLAY: Always visible to handle hybrid rendering for vectors */}
+        {/* Wrapper handles the "Frame" (Border, Shadow). 
+            This separates visual border from the sizing/coordinate system. */}
+        <div className="relative shadow-2xl border border-zinc-800 bg-zinc-900">
+            {/* Inner Container: EXACT Dimensions, No Border. 
+                This ensures strict 1:1 pixel mapping with no border-box scaling artifacts. */}
             <div 
-                className="absolute inset-0 pointer-events-none block"
-                style={{ width: '100%', height: '100%' }}
+                ref={containerRef}
+                className={`relative overflow-hidden ${projectRef.current.meta.activeTool === 'pen' ? 'cursor-crosshair' : 'cursor-default'}`}
+                style={{ width: projectRef.current.meta.width, height: projectRef.current.meta.height }}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
             >
-                {svgContent}
+                 <canvas 
+                    ref={canvasWebGpuRef} 
+                    width={projectRef.current.meta.width} 
+                    height={projectRef.current.meta.height}
+                    className={`absolute inset-0 pointer-events-none ${rendererMode === 'webgpu' ? 'block' : 'hidden'}`}
+                    style={{ width: '100%', height: '100%' }}
+                />
+                <div 
+                    className="absolute inset-0 pointer-events-none block"
+                    style={{ width: '100%', height: '100%' }}
+                >
+                    {svgContent}
+                </div>
+                <svg 
+                    className="absolute inset-0 w-full h-full pointer-events-none z-20"
+                    viewBox={`0 0 ${projectRef.current.meta.width} ${projectRef.current.meta.height}`}
+                >
+                    {renderGizmo()}
+                </svg>
             </div>
-            <svg 
-                className="absolute inset-0 w-full h-full pointer-events-none z-20"
-                viewBox={`0 0 ${projectRef.current.meta.width} ${projectRef.current.meta.height}`}
-            >
-                {renderGizmo()}
-            </svg>
         </div>
     </div>
   );

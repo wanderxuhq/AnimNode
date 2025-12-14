@@ -59,16 +59,20 @@ export const generateSVGString = (project: ProjectState): string => {
         }
     }
     
+    // Transform is applied first: Translate to (x,y), then Rotate, then Scale.
+    // Inside this transform, (0,0) is the center of the object.
     const transform = `translate(${x}, ${y}) rotate(${rotation}) scale(${scale})`;
     
     if (node.type === 'rect') {
       const w = v('width', 100);
       const h = v('height', 100);
-      elements += `<rect x="0" y="0" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />\n`;
+      // To draw a centered rect in SVG (where x,y is Top-Left), we draw at -w/2, -h/2
+      elements += `<rect x="${-w/2}" y="${-h/2}" width="${w}" height="${h}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />\n`;
     } 
     else if (node.type === 'circle') {
       const r = v('radius', 50);
-      elements += `<circle cx="${r}" cy="${r}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />\n`;
+      // Circle cx,cy is the center. Since we translated to center, these are 0,0.
+      elements += `<circle cx="0" cy="0" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}" transform="${transform}" />\n`;
     } 
     else if (node.type === 'vector') {
         const path = v('path', '');

@@ -320,7 +320,7 @@ export default function App() {
             
             {/* Layer List with Drag & Drop */}
             {isGraphMode ? (
-                <NodeGraph project={project} onSelect={handleNodeSelect} />
+                <NodeGraph project={project} onSelect={handleNodeSelect} onCommit={commit} onAddNode={addNode} />
             ) : (
                 <div className="flex-1 overflow-y-auto p-2 space-y-1 relative" onDragLeave={handleDragLeave}>
                     {/* Standard Map: Index 0 is Top Layer */}

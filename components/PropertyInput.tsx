@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Property, Node, Command, PropertyType, Keyframe } from '../types';
-import { Code, Hash, Link as LinkIcon, Braces, List, FunctionSquare, Lock, Diamond } from 'lucide-react';
+import { Code, Hash, Link as LinkIcon, Braces, List, FunctionSquare, Lock, Diamond, Type as TypeIcon, ToggleLeft } from 'lucide-react';
 import { detectLinkCycle, evaluateProperty } from '../services/engine';
 import { consoleService } from '../services/console';
 import { Commands } from '../services/commands';
@@ -38,29 +38,88 @@ const formatLabel = (key: string) => {
   return key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
 };
 
+const detectSmartType = (input: string, nodes: Record<string, Node>): { type: PropertyType, value: any } => {
+    const trimmed = input.trim();
+    
+    // 1. Variable Reference
+    // Checks if input matches a NodeID exactly AND that node is a 'value' type
+    if (nodes[trimmed] && nodes[trimmed].type === 'value') {
+        return { type: 'ref', value: `${trimmed}:value` };
+    }
+
+    // 2. Booleans
+    if (trimmed === 'true') return { type: 'boolean', value: true };
+    if (trimmed === 'false') return { type: 'boolean', value: false };
+
+    // 3. Numbers (Strict check, ignore empty string)
+    if (trimmed !== '' && !isNaN(Number(trimmed))) {
+        return { type: 'number', value: Number(trimmed) };
+    }
+
+    // 4. Arrays (Start with [ and End with ])
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        try {
+            const arr = JSON.parse(trimmed);
+            if (Array.isArray(arr)) return { type: 'array', value: arr };
+        } catch (e) {}
+    }
+
+    // 5. Objects (Start with { and End with })
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+            const obj = JSON.parse(trimmed);
+            if (typeof obj === 'object') return { type: 'object', value: obj };
+        } catch (e) {}
+    }
+
+    // 6. Quoted Strings
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+        return { type: 'string', value: trimmed.slice(1, -1) };
+    }
+
+    // Default: Fallback to string (unquoted)
+    return { type: 'string', value: trimmed };
+};
+
+const formatValueForDisplay = (v: any, type: PropertyType): string => {
+    if (type === 'function') return v ? v.toString() : '() => {}';
+    if (v === undefined) return '';
+
+    try {
+        // Preserve syntax for Objects, Arrays, Booleans, and Strings (add quotes)
+        if (type === 'object' || type === 'array' || type === 'boolean' || type === 'string') {
+             // JSON.stringify adds quotes to strings, which is what we want for "syntax preservation"
+             // It also handles objects/arrays formatting
+             return JSON.stringify(v, null, 2);
+        }
+        
+        if (type === 'number') {
+            if (isNaN(v)) return 'NaN';
+            if (!isFinite(v)) return 'Infinity';
+            // JSON stringify is safe for numbers
+            return JSON.stringify(v);
+        }
+    } catch (e) {}
+    
+    return String(v);
+};
+
 export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nodeId, nodes, currentTime, onUpdate, onCommit, autoFocusTrigger, onToggleKeyframe }) => {
-  // Determine if we are in a visual editing mode based on type
   const isExpression = prop.type === 'expression';
   const isRef = prop.type === 'ref';
-  const isStatic = !isExpression && !isRef;
+  // "Smart Mode" handles static types (number, string, bool, array, object) via the main input
+  const isSmartMode = !isExpression && !isRef; 
   const nodeType = nodes[nodeId]?.type;
   
-  // Special Read-Only Logic for derived paths on Shapes
+  // Derived paths (read-only calculation visualization)
   const isDerivedPath = propKey === 'path' && (nodeType === 'rect' || nodeType === 'circle');
 
-  // Initialize local state
   const getInitialValue = () => {
-      if (isStatic) {
+      if (isSmartMode) {
           const v = prop.value;
-          if (prop.type === 'object' || prop.type === 'array') {
-              try { return JSON.stringify(v, null, 2); } catch { return String(v); }
-          }
-          if (prop.type === 'function') {
-              return v ? v.toString() : '() => {}';
-          }
-          return String(v);
+          return formatValueForDisplay(v, prop.type);
       }
-      return '0';
+      return '';
   };
 
   const [localValue, setLocalValue] = useState<string>(getInitialValue());
@@ -70,7 +129,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
   const isEditingRef = useRef(false);
   const snapshotRef = useRef<Partial<Property> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const smartInputRef = useRef<HTMLTextAreaElement>(null);
   const latestState = useRef({ localValue, localExpression, prop, nodeId, propKey, nodes });
 
   const [linkTargetNode, setLinkTargetNode] = useState<string>("");
@@ -81,12 +140,20 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       latestState.current = { localValue, localExpression, prop, nodeId, propKey, nodes };
   }, [localValue, localExpression, prop, nodeId, propKey, nodes]);
 
+  // Adjust height of smart input
+  useEffect(() => {
+      if (smartInputRef.current) {
+          smartInputRef.current.style.height = 'auto';
+          smartInputRef.current.style.height = (smartInputRef.current.scrollHeight + 2) + 'px';
+      }
+  }, [localValue, isSmartMode]);
+
   // Sync props to state when not editing
   useEffect(() => {
     if (!isEditingRef.current) {
         if (isDerivedPath) {
              const ctx: any = {
-                 project: { nodes }, // minimal project mock
+                 project: { nodes }, 
                  get: (nid: string, pid: string) => {
                      const node = nodes[nid];
                      const p = node?.properties[pid];
@@ -97,24 +164,14 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
              const val = evaluateProperty(prop, currentTime, ctx, 0, { nodeId, propKey });
              setLocalValue(String(val));
         } else {
-             if (isStatic) {
-                // If we have keyframes, evaluate the interpolated value for display
+             if (isSmartMode) {
+                // If we have keyframes, show current interpolated value
                 let effectiveValue = prop.value;
                 if (prop.keyframes && prop.keyframes.length > 0) {
                      effectiveValue = evaluateProperty(prop, currentTime);
                 }
                 
-                const v = effectiveValue;
-
-                if (prop.type === 'object' || prop.type === 'array') {
-                    try { setLocalValue(JSON.stringify(v, null, 2)); } 
-                    catch (e) { setLocalValue(String(v)); }
-                } else if (prop.type === 'function') {
-                    setLocalValue(v ? v.toString() : '() => {}');
-                } else {
-                    if (typeof v === 'number') setLocalValue(Math.abs(v) < 0.0001 && v !== 0 ? '0' : parseFloat(v.toFixed(3)).toString());
-                    else setLocalValue(String(v));
-                }
+                setLocalValue(formatValueForDisplay(effectiveValue, prop.type));
                 setJsonError(null);
             }
             
@@ -131,7 +188,7 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
              }
         }
     }
-  }, [prop, isStatic, isExpression, isRef, nodes, isDerivedPath, currentTime]); 
+  }, [prop, isSmartMode, isExpression, isRef, nodes, isDerivedPath, currentTime]); 
 
   const captureSnapshot = () => {
       if (!isEditingRef.current) {
@@ -154,8 +211,8 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       
       let newState: Partial<Property> = {};
       let hasChanged = false;
-      
-      // Handle Commits based on current Type in State
+      let label = `Set ${formatLabel(state.propKey)}`;
+
       const currentType = state.prop.type;
 
       if (currentType === 'expression') {
@@ -167,53 +224,41 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
           hasChanged = state.prop.value !== oldState.value || oldState.type !== 'ref';
       
       } else {
-          // Static Value
-          let val: any = state.localValue;
-          
-          if (currentType === 'number') {
-              const parsed = parseFloat(val);
-              val = isNaN(parsed) ? (oldState.value ?? 0) : parsed;
-          } else if (currentType === 'object' || currentType === 'array') {
-              try {
-                  val = JSON.parse(state.localValue);
-                  setJsonError(null);
-              } catch (e) {
-                  setJsonError("Invalid JSON");
-                  return; // Abort commit
-              }
-          } else if (currentType === 'boolean') {
-              val = (state.localValue === 'true'); // Simple hack, usually updated via buttons
-          }
+          // SMART MODE COMMIT
+          // We analyze the text in localValue to determine type and value
+          const detected = detectSmartType(state.localValue, state.nodes);
           
           const hasKeyframes = state.prop.keyframes && state.prop.keyframes.length > 0;
           
           if (hasKeyframes) {
-              // IMPORTANT: Use keyframes from current state (updated live via auto-key)
-              // Do NOT use onToggleKeyframe as that uses current global time which may have shifted
-              newState = { 
-                  type: currentType, 
-                  value: val,
-                  keyframes: state.prop.keyframes 
-              }; 
-              hasChanged = true; 
+              if (detected.type === 'ref') {
+                   // Variable link overrides animation
+                   newState = { type: 'ref', value: detected.value, keyframes: [] };
+                   label = `Link to ${detected.value}`;
+                   hasChanged = true;
+              } else {
+                   // Ensure type compatibility or cast?
+                   // For now, assume number->number. 
+                   newState = { type: state.prop.type, value: detected.value, keyframes: state.prop.keyframes };
+                   hasChanged = true;
+              }
           } else {
-              newState = { type: currentType, value: val };
-              const valChanged = JSON.stringify(val) !== JSON.stringify(oldState.value);
-              hasChanged = valChanged || oldState.type !== currentType;
+              // Static mode: Apply detected type and value
+              newState = { type: detected.type, value: detected.value };
+              hasChanged = JSON.stringify(detected.value) !== JSON.stringify(oldState.value) || detected.type !== oldState.type;
+              
+              if (detected.type === 'ref') label = `Link to ${detected.value}`;
           }
       }
 
       if (hasChanged) {
-          consoleService.log('info', [`Commit ${state.propKey}`], { nodeId: state.nodeId, propKey: state.propKey });
-          const label = formatLabel(state.propKey);
-          
           const command = Commands.set(
               { nodes: state.nodes } as any, 
               state.nodeId,
               state.propKey,
               newState, 
               oldState, 
-              `Set ${label}`
+              label
           );
           onCommit(command);
       }
@@ -238,25 +283,6 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       captureSnapshot();
       const val = e.target.value;
       setLocalValue(val);
-      
-      let content: any = val;
-      if (prop.type === 'number') {
-          const num = parseFloat(val);
-          if (!isNaN(num)) content = num;
-      }
-      
-      if (prop.type !== 'object' && prop.type !== 'array') {
-          onUpdate(nodeId, propKey, { type: prop.type, value: content });
-      }
-      
-      if (prop.type === 'object' || prop.type === 'array') {
-          try {
-             JSON.parse(val);
-             setJsonError(null);
-          } catch(e) {
-             setJsonError("Invalid JSON");
-          }
-      }
   };
 
   const handleBlur = () => {
@@ -265,28 +291,27 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
 
   const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       if (isDerivedPath) return; 
-
       captureSnapshot();
       const val = e.target.value;
       setLocalExpression(val);
+      // For code, we stream updates to allow live preview
       onUpdate(nodeId, propKey, { type: 'expression', value: val });
   };
 
   const handleCodeBlur = () => {
       consoleService.stopEditing(nodeId, propKey);
-      try {
-          new Function('t', 'val', 'ctx', 'console', localExpression);
-      } catch (e: any) {
-          consoleService.log('error', [e.message], { nodeId, propKey });
-      }
       performCommit();
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-           if (prop.type !== 'object' && prop.type !== 'array' && prop.type !== 'expression' && prop.type !== 'function') {
-               (e.target as HTMLElement).blur();
-               return;
+      if (e.key === 'Enter') {
+           const val = localValue.trim();
+           // Allow multiline for objects and arrays or if Shift is pressed
+           const isComplex = val.startsWith('{') || val.startsWith('[');
+           
+           if (!e.shiftKey && !isComplex) {
+               e.preventDefault();
+               (e.target as HTMLElement).blur(); // Triggers Commit
            }
       }
   };
@@ -300,9 +325,6 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
 
     if (prop.type === 'expression') {
         newMeta.lastExpression = String(prop.value);
-    } else if (prop.type !== 'ref') {
-        newMeta.lastValue = prop.value;
-        newMeta.lastType = prop.type;
     }
 
     let newVal: any = prop.value;
@@ -317,25 +339,14 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
     } else if (targetType === 'ref') {
         newVal = ""; 
     } else {
-        if (newMeta.lastValue !== undefined && newMeta.lastType === targetType) {
-            newVal = newMeta.lastValue;
-        } else {
-            if (prop.type === 'expression') {
-                 if (targetType === 'number') newVal = 0;
-                 else if (targetType === 'string' || targetType === 'color') newVal = "";
-                 else if (targetType === 'boolean') newVal = false;
-                 else if (targetType === 'object' || targetType === 'array') newVal = targetType === 'array' ? [] : {};
-            } else {
-                 if (targetType === 'number') newVal = Number(prop.value) || 0;
-                 else if (targetType === 'string') newVal = String(prop.value);
-                 else if (targetType === 'boolean') newVal = Boolean(prop.value);
-                 else newVal = prop.value; 
-            }
-        }
+        // Switching to a static type manually
+        if (targetType === 'number') newVal = Number(prop.value) || 0;
+        else if (targetType === 'string') newVal = String(prop.value);
+        else if (targetType === 'boolean') newVal = Boolean(prop.value);
+        else newVal = prop.value;
     }
     
     const update = { type: targetType, value: newVal, meta: newMeta };
-    
     onUpdate(nodeId, propKey, update);
     const label = formatLabel(propKey);
     onCommit(Commands.set({ nodes } as any, nodeId, propKey, update, oldState, `Change ${label} Type`));
@@ -371,45 +382,27 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
     setCycleDetected(isCycle);
   }, [linkTargetNode, linkTargetProp, prop.type, nodeId, propKey, nodes, localExpression]);
 
-  useEffect(() => {
-    if (autoFocusTrigger) {
-        if ((prop.type === 'expression' || prop.type === 'object' || prop.type === 'array') && textareaRef.current && !isDerivedPath) {
-            textareaRef.current.focus();
-        } else if (isStatic && inputRef.current && !isDerivedPath) {
-            inputRef.current.focus();
-        }
-    }
-  }, [autoFocusTrigger, prop.type, isStatic, isDerivedPath]);
-
   const getTypeIcon = () => {
       switch(prop.type) {
           case 'object': return <Braces size={12} />;
           case 'array': return <List size={12} />;
           case 'function': return <FunctionSquare size={12} />;
-          case 'string': return <span className="font-serif font-bold text-[10px]">Tx</span>;
-          case 'boolean': return <span className="font-mono font-bold text-[10px]">T/F</span>;
+          case 'string': return <TypeIcon size={12} />;
+          case 'boolean': return <ToggleLeft size={12} />;
+          case 'ref': return <LinkIcon size={12} />;
+          case 'expression': return <Code size={12} />;
           default: return <Hash size={12} />;
       }
   };
   
-  const getStaticTargetType = (): PropertyType => {
-      if (['fill', 'stroke'].includes(propKey)) return 'color';
-      if (['path'].includes(propKey)) return 'string';
-      return 'number';
-  };
-
-  const label = formatLabel(propKey);
   const hasKeyframes = prop.keyframes && prop.keyframes.length > 0;
-  
-  // Check if we are ON a keyframe at the current time
   const onKeyframe = hasKeyframes && prop.keyframes?.some(k => Math.abs(k.time - currentTime) < 0.05);
 
   const handleToggleKeyframe = (e: React.MouseEvent) => {
       e.stopPropagation();
-      
-      // If currently an expression, we must convert to static FIRST
-      if (prop.type === 'expression') {
-          const ctx: any = {
+      if (prop.type === 'expression' || prop.type === 'ref') {
+         // Convert to static value first
+         const ctx: any = {
              project: { nodes },
              get: (nid: string, pid: string) => {
                  const node = nodes[nid];
@@ -436,32 +429,32 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
     <div className="space-y-2">
       <div className="flex justify-between items-center group">
         <label className="text-xs text-zinc-400 font-medium group-hover:text-zinc-200 transition-colors select-none flex items-center gap-1.5 cursor-default flex-1 truncate mr-2">
-            {/* Keyframe Toggle - Now available for all non-derived static props */}
             {!isDerivedPath && (
                 <button 
                     onClick={handleToggleKeyframe}
                     className={`p-1 rounded transition-all flex items-center justify-center hover:bg-zinc-800 ${hasKeyframes ? 'text-blue-400' : 'text-zinc-600 hover:text-zinc-300'}`}
-                    title={hasKeyframes ? "Add/Remove Keyframe at Current Time" : "Enable Animation (Convert to Keyframes)"}
+                    title={hasKeyframes ? "Add/Remove Keyframe" : "Enable Animation"}
                 >
                     <Diamond size={10} fill={onKeyframe ? "currentColor" : "none"} strokeWidth={2} />
                 </button>
             )}
           
-          <span className="truncate">{label}</span>
+          <span className="truncate">{formatLabel(propKey)}</span>
           
-          {isDerivedPath ? <Lock size={10} className="text-zinc-600" /> : <span className="text-zinc-600" title={prop.type}>{getTypeIcon()}</span>}
+          {/* Detected Type Icon */}
+          {!isDerivedPath && <span className="text-zinc-600 ml-1" title={`Current Type: ${prop.type}`}>{getTypeIcon()}</span>}
         </label>
         
         {!isDerivedPath && (
-            <div className="flex bg-zinc-800 rounded p-0.5 opacity-40 group-hover:opacity-100 transition-opacity shrink-0">
-                <button onClick={() => handleTypeSwitch(getStaticTargetType())} className={`p-1 rounded ${isStatic ? 'bg-zinc-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Static Value"><Hash size={12} /></button>
+            <div className="flex bg-zinc-800 rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                {/* Manual Override Buttons if detection isn't enough */}
+                <button onClick={() => handleTypeSwitch('number')} className={`p-1 rounded ${isSmartMode ? 'bg-zinc-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Smart Input"><Hash size={12} /></button>
                 <button onClick={() => handleTypeSwitch('ref')} className={`p-1 rounded ${prop.type === 'ref' ? 'bg-indigo-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Link"><LinkIcon size={12} /></button>
-                <button onClick={() => handleTypeSwitch('expression')} className={`p-1 rounded ${prop.type === 'expression' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Code"><Code size={12} /></button>
+                <button onClick={() => handleTypeSwitch('expression')} className={`p-1 rounded ${prop.type === 'expression' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-zinc-300'}`} title="Expression"><Code size={12} /></button>
             </div>
         )}
       </div>
 
-      {/* Render Text Area for Derived Paths (Read Only) */}
       {isDerivedPath && (
           <div className="mt-1">
              <textarea 
@@ -472,92 +465,63 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
           </div>
       )}
 
-      {/* Standard Static Input */}
-      {isStatic && !isDerivedPath && (
+      {/* SMART INPUT for all static types (Multi-line supported) */}
+      {isSmartMode && !isDerivedPath && (
         <div className="mt-1 relative">
-          {(prop.type === 'number' || prop.type === 'string') && (
-            <input 
-              ref={inputRef}
-              type="text" 
-              data-undoable={!isDerivedPath}
-              disabled={isDerivedPath}
-              className={`w-full bg-zinc-950 border ${onKeyframe ? 'border-blue-500 text-blue-200' : hasKeyframes ? 'border-blue-900/50 text-blue-200' : 'border-zinc-800 text-white'} rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 font-mono ${isDerivedPath ? 'opacity-50 cursor-not-allowed' : ''}`}
+            <textarea
+              ref={smartInputRef}
+              data-undoable="true"
+              className={`w-full bg-zinc-950 border ${onKeyframe ? 'border-blue-500 text-blue-200' : hasKeyframes ? 'border-blue-900/50 text-blue-200' : 'border-zinc-800 text-white'} rounded px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500 font-mono resize-y min-h-[28px] overflow-hidden leading-relaxed`}
               value={localValue}
               onChange={handleChange}
               onFocus={handleFocus}
               onBlur={handleBlur}
               onKeyDown={handleInputKeyDown}
+              placeholder="Value, Array, Object, or Variable Name..."
+              rows={1}
             />
-          )}
-           {prop.type === 'boolean' && (
-               <div className="flex gap-2">
-                   <button 
-                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {type: 'boolean', value: true}); isEditingRef.current=true; performCommit(); }}
-                    className={`flex-1 py-1 text-xs rounded border ${prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'} ${hasKeyframes ? 'border-blue-900/50' : ''}`}
-                   >
-                       TRUE
-                   </button>
-                   <button 
-                    onClick={() => { captureSnapshot(); onUpdate(nodeId, propKey, {type: 'boolean', value: false}); isEditingRef.current=true; performCommit(); }}
-                    className={`flex-1 py-1 text-xs rounded border ${!prop.value ? 'bg-indigo-900 border-indigo-700 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500'} ${hasKeyframes ? 'border-blue-900/50' : ''}`}
-                   >
-                       FALSE
-                   </button>
-               </div>
-          )}
-          {prop.type === 'color' && (
-             <div className="flex gap-2">
-                <div className="relative w-8 h-8 rounded overflow-hidden cursor-pointer border border-zinc-700 shrink-0">
+            {prop.type === 'color' && (
+                <div className="absolute right-1 top-2 w-4 h-4 rounded border border-zinc-700 cursor-pointer overflow-hidden">
                     <input 
                         type="color" 
-                        data-undoable="true"
-                        className="absolute -top-2 -left-2 w-16 h-16 p-0 border-0 cursor-pointer"
-                        value={String(prop.value || '#000000')}
-                        onChange={handleChange}
-                        onClick={captureSnapshot} 
-                        onFocus={handleFocus}
-                        onBlur={handleBlur}
+                        className="absolute -top-2 -left-2 w-8 h-8 cursor-pointer opacity-0"
+                        value={String(prop.value).startsWith('#') ? String(prop.value) : '#000000'}
+                        onChange={(e) => {
+                            captureSnapshot();
+                            onUpdate(nodeId, propKey, { type: 'color', value: e.target.value });
+                            isEditingRef.current = true;
+                            performCommit();
+                        }}
                     />
+                    <div className="w-full h-full" style={{ backgroundColor: String(prop.value) }} />
                 </div>
-                <input 
-                    ref={inputRef}
-                    type="text" 
-                    data-undoable="true"
-                    className={`flex-1 bg-zinc-950 border ${hasKeyframes ? 'border-blue-900/50 text-blue-200' : 'border-zinc-800 text-white'} rounded px-2 py-1 text-xs font-mono`}
-                    value={localValue}
-                    onChange={handleChange}
-                    onFocus={handleFocus}
-                    onBlur={handleBlur}
-                    onKeyDown={handleInputKeyDown}
-                />
-             </div>
-          )}
-          {(prop.type === 'object' || prop.type === 'array') && (
-              <div className="relative">
-                <textarea 
-                    ref={textareaRef}
-                    data-undoable="true"
-                    className={`w-full bg-zinc-950 border rounded p-2 text-xs font-mono focus:outline-none resize-none leading-relaxed h-24 ${jsonError ? 'border-red-500 focus:border-red-500' : 'border-zinc-800 focus:border-blue-500'}`}
-                    value={localValue}
-                    onChange={handleChange}
-                    onFocus={handleFocus}
-                    onBlur={handleBlur}
-                    onKeyDown={handleInputKeyDown}
-                    spellCheck={false}
-                />
-                {jsonError && <div className="absolute top-1 right-2 text-[10px] text-red-500 font-bold">{jsonError}</div>}
-              </div>
-          )}
+            )}
         </div>
       )}
 
+      {/* Manual Reference UI (Fallback if they manually switch to Link mode or want dropdowns) */}
       {prop.type === 'ref' && (
           <div className={`space-y-2 p-2 border rounded ${cycleDetected ? 'bg-red-900/10 border-red-900/50' : 'bg-indigo-900/10 border-indigo-900/30'}`}>
+              <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] text-indigo-400 font-bold uppercase">Linked</span>
+                  {/* Allow switching back to smart input easily */}
+                  <button onClick={() => handleTypeSwitch('number')} className="ml-auto text-[10px] text-zinc-500 hover:text-zinc-300 underline">Unlink</button>
+              </div>
               <select 
                 data-undoable="true"
                 className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300 focus:outline-none"
                 value={linkTargetNode}
-                onChange={(e) => { setLinkTargetNode(e.target.value); setLinkTargetProp(""); }}
+                onChange={(e) => { 
+                    const val = e.target.value;
+                    setLinkTargetNode(val);
+                    // Auto-link variable value if a Variable node is selected
+                    if (nodes[val] && nodes[val].type === 'value') {
+                        setLinkTargetProp("value");
+                        handleLinkChange(val, "value");
+                    } else {
+                        setLinkTargetProp(""); 
+                    }
+                }}
               >
                   <option value="">Select Node...</option>
                   {Object.values(nodes).map((n: Node) => <option key={n.id} value={n.id}>{n.id}</option>)}
@@ -582,18 +546,17 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
         <div className="mt-1 relative space-y-1">
           <textarea 
             ref={textareaRef}
-            data-undoable={!isDerivedPath}
-            disabled={isDerivedPath}
-            className={`w-full h-24 bg-zinc-950 border rounded p-2 text-xs font-mono focus:outline-none resize-none leading-relaxed ${cycleDetected ? 'border-red-900/50 text-red-200' : 'border-blue-900/50 text-blue-200 focus:border-blue-500'} ${isDerivedPath ? 'opacity-60 cursor-not-allowed text-zinc-400' : ''}`}
+            data-undoable="true"
+            className={`w-full h-24 bg-zinc-950 border rounded p-2 text-xs font-mono focus:outline-none resize-none leading-relaxed ${cycleDetected ? 'border-red-900/50 text-red-200' : 'border-blue-900/50 text-blue-200 focus:border-blue-500'}`}
             spellCheck={false}
             value={localExpression}
             onChange={handleCodeChange}
-            onFocus={() => { if(!isDerivedPath) { consoleService.startEditing(nodeId, propKey); handleFocus(); }}}
+            onFocus={() => { consoleService.startEditing(nodeId, propKey); handleFocus(); }}
             onBlur={handleCodeBlur}
             onKeyDown={handleInputKeyDown}
           />
           <div className="flex justify-between text-[10px] text-zinc-500 px-1">
-             <span>vars: t, val, ctx</span>
+             <span>vars: t, val, ctx, [variables]</span>
              <span className="text-blue-500 flex items-center gap-1">Live</span>
           </div>
         </div>

@@ -1,4 +1,3 @@
-
 import { Node, ProjectState, Property, Keyframe } from '../types';
 import { consoleService } from './console';
 import { PathBuilder } from './path';
@@ -9,7 +8,7 @@ import React from 'react';
 const ALLOWED_GLOBALS = new Set([
   'Math', 'Date', 'Array', 'Object', 'String', 'Number', 'Boolean', 'RegExp', 'JSON', 
   'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'console', 'Infinity', 'NaN', 'undefined',
-  'Path' // Allow Path in globals
+  'Path' 
 ]);
 
 function createSandbox(context: Record<string, any>) {
@@ -19,28 +18,32 @@ function createSandbox(context: Record<string, any>) {
     },
     get(target, key: string | symbol) {
       if (key === Symbol.unscopables) return undefined;
+      
+      // 1. Check local context (t, val, ctx, etc.)
       if (key in target) {
         return target[key as string];
       }
+      
+      // 2. Check Allowed Globals
       if (typeof key === 'string' && ALLOWED_GLOBALS.has(key)) {
         return (window as any)[key];
       }
+      
+      // 3. Check for Project Variables (Direct Access)
+      // This allows accessing a node named 'speed' directly as 'speed' in the expression
       if (typeof key === 'string' && target.ctx && target.ctx.project) {
         const node = target.ctx.project.nodes[key];
         if (node && node.type === 'value') {
+            // Automatically unwrap 'value' property
             return target.ctx.get(key, 'value');
         }
       }
+      
       return undefined;
     },
     set(target, key, value) {
+      // Prevent pollution
       return true; 
-    },
-    defineProperty(target, key, descriptor) {
-      return false;
-    },
-    deleteProperty(target, key) {
-      return false;
     }
   });
 }
@@ -80,6 +83,7 @@ export function detectLinkCycle(
       while ((match = codeRegex.exec(expression)) !== null) {
           queue.push({ n: match[1], p: match[2] });
       }
+      // Check for direct variable references
       for (const varId of variableNodes) {
           const varRegex = new RegExp(`\\b${varId}\\b`);
           if (varRegex.test(expression)) {
@@ -158,7 +162,7 @@ export function evaluateProperty(
              ...context,
              audio: context.audio || { bass: 0, mid: 0, high: 0, treble: 0, fft: [] },
           },
-          Path: PathBuilder, // Inject Path class
+          Path: PathBuilder, 
           prop: (key: string) => {
              if (debugInfo && context.get) {
                  return context.get(debugInfo.nodeId, key, depth + 1);
@@ -186,7 +190,6 @@ export function evaluateProperty(
           consoleService.clearError(debugInfo.nodeId, debugInfo.propKey);
       }
       
-      // Auto-convert PathBuilder to string for renderer
       if (result instanceof PathBuilder) {
           return result.toString();
       }
@@ -240,51 +243,13 @@ export function evaluateProperty(
 function getReferencedVariables(code: string, variables: Set<string>): Set<string> {
     const refs = new Set<string>();
     if (!code) return refs;
-    let i = 0;
-    const len = code.length;
-  
-    while (i < len) {
-      const char = code[i];
-      if (char === '/' && code[i + 1] === '/') {
-        i += 2;
-        while (i < len && code[i] !== '\n') i++;
-        continue;
-      }
-      if (char === '/' && code[i + 1] === '*') {
-        i += 2;
-        while (i < len && !(code[i] === '*' && code[i + 1] === '/')) i++;
-        i += 2;
-        continue;
-      }
-      if (char === '"' || char === "'" || char === '`') {
-        const quote = char;
-        i++;
-        while (i < len) {
-          if (code[i] === '\\') {
-            i += 2;
-          } else if (code[i] === quote) {
-            i++;
-            break;
-          } else {
-            i++;
-          }
-        }
-        continue;
-      }
-      if (/[a-zA-Z_$]/.test(char)) {
-        let start = i;
-        while (i < len && /[a-zA-Z0-9_$]/.test(code[i])) i++;
-        const word = code.slice(start, i);
-        let j = start - 1;
-        while(j >= 0 && /\s/.test(code[j])) j--;
-        const isPropAccess = j >= 0 && code[j] === '.';
-        if (!isPropAccess && variables.has(word)) {
-          refs.add(word);
-        }
-        continue;
-      }
-      i++;
-    }
+    
+    // Very simple tokenization
+    const tokens = code.match(/[a-zA-Z_$][a-zA-Z0-9_$]*/g) || [];
+    tokens.forEach(t => {
+        if (variables.has(t)) refs.add(t);
+    });
+    
     return refs;
 }
 
@@ -303,6 +268,8 @@ export function findUnusedVariables(nodes: Record<string, Node>): Set<string> {
                 const expr = String(prop.value);
                 const refs = getReferencedVariables(expr, variables);
                 refs.forEach(r => unused.delete(r));
+                
+                // Also check explicit ctx.get calls
                 const getRegex = /ctx\.get\(\s*['"]([^'"]+)['"]/g;
                 let match;
                 while ((match = getRegex.exec(expr)) !== null) {
@@ -320,8 +287,7 @@ export function findUnusedVariables(nodes: Record<string, Node>): Set<string> {
     return unused;
 }
 
-// --- GRADIENT PARSER ---
-
+// ... Gradient Parser and Render logic remains unchanged ...
 export interface GradientDef {
     id: string;
     type: 'linearGradient' | 'radialGradient';
@@ -335,49 +301,37 @@ export function parseCssGradient(str: string, id: string): GradientDef | null {
     
     if (!isLinear && !isRadial) return null;
 
-    // Extract inside parentheses
     const startParen = str.indexOf('(');
     const endParen = str.lastIndexOf(')');
     if (startParen === -1 || endParen === -1) return null;
     
     const content = str.substring(startParen + 1, endParen);
-    
-    // Split by comma BUT ignore commas inside nested parentheses (like rgb(0,0,0))
     const parts = content.split(/,(?![^(]*\))/).map(s => s.trim());
     
     let stops: {offset: string, color: string}[] = [];
     let attrs: any = {};
     
-    // Check first part for configuration
     let startIndex = 0;
     const first = parts[0];
     
     if (isLinear) {
-        // Defaults: Top to Bottom
         attrs = { x1: "0%", y1: "0%", x2: "0%", y2: "100%" };
-        
         if (first.includes('to right')) { attrs = { x1: "0%", y1: "0%", x2: "100%", y2: "0%" }; startIndex = 1; }
         else if (first.includes('to bottom right')) { attrs = { x1: "0%", y1: "0%", x2: "100%", y2: "100%" }; startIndex = 1; }
-        else if (first.includes('to bottom')) { startIndex = 1; } // default
-        else if (first.match(/deg/)) { startIndex = 1; } // Ignore degrees for simple parser
+        else if (first.includes('to bottom')) { startIndex = 1; } 
+        else if (first.match(/deg/)) { startIndex = 1; }
     } else {
-        // Defaults: Center
         attrs = { cx: "50%", cy: "50%", r: "50%", fx: "50%", fy: "50%" };
         if (first.includes('circle')) startIndex = 1;
-        // else assume stops start immediately
     }
 
-    // Process Stops
     for (let i = startIndex; i < parts.length; i++) {
         const p = parts[i];
-        // Split last space to separate color and offset
         const spaceIdx = p.lastIndexOf(' ');
         let color = p;
         let offset = '';
         
         if (spaceIdx > -1) {
-            // Check if it's actually a color like "rgb(0, 0, 0)" which has spaces
-            // Heuristic: If part 2 starts with %, it's an offset
             const part2 = p.substring(spaceIdx + 1);
             if (part2.includes('%')) {
                 color = p.substring(0, spaceIdx);
@@ -385,14 +339,10 @@ export function parseCssGradient(str: string, id: string): GradientDef | null {
             }
         }
         
-        // Auto-assign offsets if missing
         if (!offset) {
             if (i === startIndex) offset = '0%';
             else if (i === parts.length - 1) offset = '100%';
-            else {
-                // Distribute evenly? Simplified: just guess for middle
-                offset = '50%';
-            }
+            else offset = '50%';
         }
         stops.push({ color, offset });
     }
@@ -419,8 +369,6 @@ export function renderSVG(project: ProjectState, audioData?: any, hybridMode: bo
       }
   };
 
-  // REVERSE order for Painter's Algorithm.
-  // rootNodeIds[0] is TOP (Foreground).
   const renderOrder = [...project.rootNodeIds].reverse();
   const gradients: GradientDef[] = [];
 
@@ -435,7 +383,6 @@ export function renderSVG(project: ProjectState, audioData?: any, hybridMode: bo
     let fill = evalProp('fill', 'transparent');
     let stroke = evalProp('stroke', 'transparent');
     
-    // Gradient Handling
     if (typeof fill === 'string' && (fill.startsWith('linear-gradient') || fill.startsWith('radial-gradient'))) {
         const gradId = `grad_fill_${nodeId}`;
         const def = parseCssGradient(fill, gradId);
@@ -453,16 +400,13 @@ export function renderSVG(project: ProjectState, audioData?: any, hybridMode: bo
         }
     }
     
-    // In Hybrid mode (WebGPU active), we only use SVG overlay for:
-    // 1. Vectors
-    // 2. Complex Fills/Strokes (Gradients/URLs)
     if (hybridMode) {
         const isVector = node.type === 'vector';
         const isComplexFill = typeof fill === 'string' && fill.includes('url(#');
         const isComplexStroke = typeof stroke === 'string' && stroke.includes('url(#');
         
         if (!isVector && !isComplexFill && !isComplexStroke) {
-            return null; // Skip, let WebGPU handle
+            return null; 
         }
     }
 
@@ -478,10 +422,11 @@ export function renderSVG(project: ProjectState, audioData?: any, hybridMode: bo
     if (node.type === 'rect') {
       const w = evalProp('width', 100);
       const h = evalProp('height', 100);
+      // Center Anchor Correction: Draw from -w/2, -h/2
       return React.createElement('rect', {
         key: nodeId,
-        x: 0, 
-        y: 0, 
+        x: -w/2, 
+        y: -h/2, 
         width: w, 
         height: h, 
         fill: fill,
@@ -492,10 +437,11 @@ export function renderSVG(project: ProjectState, audioData?: any, hybridMode: bo
       });
     } else if (node.type === 'circle') {
       const r = evalProp('radius', 50);
+      // Center Anchor Correction: Draw at 0,0 (cx, cy are offsets from transform origin)
       return React.createElement('circle', {
         key: nodeId,
-        cx: r, 
-        cy: r, 
+        cx: 0, 
+        cy: 0, 
         r: r, 
         fill: fill,
         stroke: stroke,

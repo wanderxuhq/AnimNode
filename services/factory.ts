@@ -26,7 +26,12 @@ const createExpr = (expression: string): Property => ({
 export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: string): Node => {
   const nodeId = id || uuid();
   
-  // Default to screen center (400, 300) so new nodes are visible
+  // Default positions (Center of canvas is usually good, random offset to see new items)
+  const uiPos = {
+      x: 100 + Math.random() * 100,
+      y: 100 + Math.random() * 100
+  };
+
   const baseProps = {
       x: createProp('number', 400),
       y: createProp('number', 300),
@@ -40,6 +45,7 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       id: nodeId,
       type,
       parentId: null,
+      ui: uiPos,
       properties: {
         value: createProp('number', 0)
       }
@@ -51,6 +57,7 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       id: nodeId,
       type,
       parentId: null,
+      ui: uiPos,
       properties: {
         ...baseProps,
         width: createProp('number', 100),
@@ -58,8 +65,8 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
         fill: createProp('color', '#3b82f6'),
         stroke: createProp('color', 'transparent'),
         strokeWidth: createProp('number', 0),
-        // Path starts at 0,0 (Top-Left)
-        path: createExpr('const w = prop("width"); const h = prop("height"); return `M 0 0 L ${w} 0 L ${w} ${h} L 0 ${h} Z`;')
+        // Path CENTERED: -w/2 to w/2
+        path: createExpr('const w = prop("width"); const h = prop("height"); return `M ${-w/2} ${-h/2} L ${w/2} ${-h/2} L ${w/2} ${h/2} L ${-w/2} ${h/2} Z`;')
       }
     };
   }
@@ -69,14 +76,15 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       id: nodeId,
       type,
       parentId: null,
+      ui: uiPos,
       properties: {
         ...baseProps,
         radius: createProp('number', 50),
         fill: createProp('color', '#ec4899'),
         stroke: createProp('color', 'transparent'),
         strokeWidth: createProp('number', 0),
-        // Circle center is at (r, r), fitting inside the bounding box starting at 0,0
-        path: createExpr('const r = prop("radius"); return `M 0 ${r} A ${r} ${r} 0 1 1 ${2*r} ${r} A ${r} ${r} 0 1 1 0 ${r} Z`;')
+        // Circle CENTERED at 0,0
+        path: createExpr('const r = prop("radius"); return `M ${-r} 0 A ${r} ${r} 0 1 1 ${r} 0 A ${r} ${r} 0 1 1 ${-r} 0 Z`;')
       }
     };
   }
@@ -86,6 +94,7 @@ export const createNode = (type: 'rect' | 'circle' | 'vector' | 'value', id?: st
       id: nodeId,
       type,
       parentId: null,
+      ui: uiPos,
       properties: {
         ...baseProps,
         path: createProp('string', ''),

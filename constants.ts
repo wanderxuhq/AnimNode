@@ -1,5 +1,3 @@
-
-
 import { ProjectState, Node, PropertyType } from './types';
 
 export const CANVAS_WIDTH = 800;
@@ -56,6 +54,7 @@ export const INITIAL_PROJECT: ProjectState = {
       id: demoRectId,
       type: 'rect',
       parentId: null,
+      ui: { x: 100, y: 150 },
       properties: {
         x: createExpr('return 400 + Math.sin(t * 2) * 200;'),
         y: createProp('number', 300),
@@ -64,6 +63,7 @@ export const INITIAL_PROJECT: ProjectState = {
         rotation: createExpr('return t * 45;'),
         scale: createProp('number', 1),
         fill: createProp('color', '#3b82f6'),
+        // Center Anchor Path: -w/2 to w/2
         path: createExpr('const w = prop("width"); const h = prop("height"); return `M ${-w/2} ${-h/2} L ${w/2} ${-h/2} L ${w/2} ${h/2} L ${-w/2} ${h/2} Z`;')
       }
     },
@@ -71,6 +71,7 @@ export const INITIAL_PROJECT: ProjectState = {
       id: demoCircleId,
       type: 'circle',
       parentId: null,
+      ui: { x: 450, y: 150 },
       properties: {
         x: createExpr('return 400 + Math.cos(t * 3) * 150;'),
         y: createExpr('return 300 + Math.sin(t * 3) * 150;'),
@@ -78,6 +79,7 @@ export const INITIAL_PROJECT: ProjectState = {
         scale: createProp('number', 1),
         radius: createExpr('return 20 + Math.abs(Math.sin(t)) * 30;'),
         fill: createProp('color', '#ec4899'),
+        // Center Anchor Circle: Centered at 0,0
         path: createExpr('const r = prop("radius"); return `M ${-r} 0 A ${r} ${r} 0 1 1 ${r} 0 A ${r} ${r} 0 1 1 ${-r} 0 Z`;')
       }
     }

@@ -23,7 +23,6 @@ declare global {
 }
 
 // --- SAFE CONSTANTS ---
-// We hardcode these to avoid "GPUBufferUsage is not defined" runtime errors
 const USAGE = {
   COPY_DST: 8,
   VERTEX: 32,
@@ -38,75 +37,98 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms : Uniforms;
 
 struct VertexInput {
-  @location(0) position : vec2<f32>,       // 0..1 Quad
-  @location(1) instancePos : vec2<f32>,    
-  @location(2) instanceSize : vec2<f32>,   
-  @location(3) instanceRot : f32,          
-  @location(4) instanceColor : vec4<f32>,  
-  @location(5) instanceType : f32,         
+  // Instance Attributes (Buffer 0)
+  @location(0) instancePosSize : vec4<f32>, // x, y, w, h
+  @location(1) instanceColor : vec4<f32>,   // r, g, b, a
+  @location(2) instanceParams : vec4<f32>,  // rot, type, pad, pad
 }
 
 struct VertexOutput {
   @builtin(position) Position : vec4<f32>,
   @location(0) uv : vec2<f32>,
   @location(1) color : vec4<f32>,
-  @location(2) shapeType : f32,  // Renamed from 'type' to avoid keyword conflict
+  @location(2) shapeType : f32,
 }
 
 @vertex
-fn vs_main(input : VertexInput) -> VertexOutput {
-  let rad = input.instanceRot * 3.14159 / 180.0;
+fn vs_main(
+  @builtin(vertex_index) vIdx : u32,
+  input : VertexInput
+) -> VertexOutput {
+  // Standard Quad UVs (Triangle List)
+  // 0: TL, 1: BL, 2: TR
+  // 3: TR, 4: BL, 5: BR
+  var uvs = array<vec2<f32>, 6>(
+    vec2<f32>(0.0, 0.0), // TL
+    vec2<f32>(0.0, 1.0), // BL
+    vec2<f32>(1.0, 0.0), // TR
+    vec2<f32>(1.0, 0.0), // TR
+    vec2<f32>(0.0, 1.0), // BL
+    vec2<f32>(1.0, 1.0)  // BR
+  );
+  let uv = uvs[vIdx];
+
+  // Unpack Input
+  let centerPos = input.instancePosSize.xy;   // CENTER World Position
+  let size = input.instancePosSize.zw;        // Width, Height
+  let rotDeg = input.instanceParams.x;
+  
+  // 1. Calculate Local Position relative to Center
+  // UV is 0..1
+  // We want local space to be -0.5..0.5
+  // So a 100px wide box goes from -50 to 50
+  let centeredUV = uv - vec2<f32>(0.5, 0.5);
+  let localPos = centeredUV * size;
+  
+  // 2. Rotate Local Position around (0,0) [The Center]
+  let rad = radians(rotDeg);
   let c = cos(rad);
   let s = sin(rad);
-  let rotMat = mat2x2<f32>(c, s, -s, c); // Standard rotation
+  
+  // Standard 2D Rotation Matrix
+  // x' = x*cos - y*sin
+  // y' = x*sin + y*cos
+  let rotatedLocal = vec2<f32>(
+    localPos.x * c - localPos.y * s,
+    localPos.x * s + localPos.y * c
+  );
 
-  // Vertices are 0..1
-  // We want to transform them such that 0,0 is the anchor (Top Left)
-  // Since scaling and rotation happen around the anchor 0,0 in local space,
-  // we do NOT subtract 0.5.
+  // 3. Translate to World Position
+  let worldPos = centerPos + rotatedLocal;
   
-  // Scale -> Rotate -> Translate
-  // posWorld is in "Canvas Pixels"
-  // input.position is 0..1, instanceSize scales it to w,h
-  // This effectively means the vertex (0,0) stays at 0,0 local, which becomes instancePos world.
-  let posWorld = (rotMat * (input.position * input.instanceSize)) + input.instancePos;
+  // 4. Project to Clip Space
+  // Screen X: 0..W  => NDC X: -1..1
+  // Screen Y: 0..H  => NDC Y:  1..-1 (Y-Up in WebGPU Clip Space)
   
-  // Project to Clip Space
-  // Canvas Coords: (0,0) Top-Left, (W,H) Bottom-Right
-  // WebGPU Clip Space: (-1,1) Top-Left, (1,-1) Bottom-Right (Standard normalized Y-up)
-  
-  // Map X [0..W] -> [-1..1]
-  let clipX = (posWorld.x / uniforms.resolution.x) * 2.0 - 1.0;
-  
-  // Map Y [0..H] -> [1..-1] (Inverted)
-  let clipY = 1.0 - (posWorld.y / uniforms.resolution.y) * 2.0;
+  let clipX = (worldPos.x / uniforms.resolution.x) * 2.0 - 1.0;
+  let clipY = 1.0 - (worldPos.y / uniforms.resolution.y) * 2.0;
 
   var output : VertexOutput;
   output.Position = vec4<f32>(clipX, clipY, 0.0, 1.0);
-  output.uv = input.position;
+  output.uv = uv;
   output.color = input.instanceColor;
-  output.shapeType = input.instanceType;
+  output.shapeType = input.instanceParams.y;
   return output;
 }
 
 @fragment
 fn fs_main(input : VertexOutput) -> @location(0) vec4<f32> {
-  // Type 0: Rect
-  // Type 1: Circle
-  
+  var finalColor = input.color;
+
+  // Circle Logic (Type 1)
   if (input.shapeType > 0.5) {
-    // Circle Logic
-    // UVs are 0..1, Center is 0.5, 0.5
+    // UV is 0..1, Center is 0.5, 0.5
     let dist = distance(input.uv, vec2<f32>(0.5, 0.5));
     if (dist > 0.5) {
       discard;
     }
-    // Anti-aliasing
+    // Simple AA
     let alpha = 1.0 - smoothstep(0.48, 0.5, dist);
-    return vec4<f32>(input.color.rgb, input.color.a * alpha);
+    finalColor.a = finalColor.a * alpha;
   }
   
-  return input.color;
+  // Premultiply Alpha for correct blending
+  return vec4<f32>(finalColor.rgb * finalColor.a, finalColor.a);
 }
 `;
 
@@ -115,14 +137,12 @@ export class WebGPURenderer {
   pipeline: GPURenderPipeline | null = null;
   uniformBuffer: GPUBuffer | null = null;
   instanceBuffer: GPUBuffer | null = null;
-  vertexBuffer: GPUBuffer | null = null;
   
-  // State tracking
+  // State
   instanceCount = 0;
   maxInstances = 2000;
-  instanceStride = 10 * 4; // 10 floats (40 bytes)
+  instanceStride = 16 * 4; // 64 bytes
   
-  // Resize tracking
   currentWidth = 0;
   currentHeight = 0;
 
@@ -142,50 +162,16 @@ export class WebGPURenderer {
         this.device = await adapter.requestDevice();
         if (!this.device) return false;
 
-        // --- PIPELINE SETUP ---
         const module = this.device.createShaderModule({
-          label: 'Main Shader',
+          label: 'Shape Shader vCenter',
           code: SHADER_CODE,
         });
 
-        // 1. Static Quad Vertices (0..1)
-        // Order: TL, BL, TR, BR (Strip)
-        const vertexData = new Float32Array([
-          0, 1, // BL (Actually, Y=1 is down in Canvas but usually up in UVs... let's stick to standard strip logic)
-                // Wait, Y-down canvas means 0 is top, 1 is bottom.
-                // Vertex Shader assumes 0,0 input maps to top-left.
-                // Let's use 0..1 for standard Y-down mapping logic in Vertex Shader.
-          0, 1, // BL (x=0, y=1) -> Bottom Left
-          0, 0, // TL (x=0, y=0) -> Top Left
-          1, 1, // BR (x=1, y=1) -> Bottom Right
-          1, 0, // TR (x=1, y=0) -> Top Right
-        ]);
-        // Revised Vertex Data for Triangle Strip to make a Quad 0,0 to 1,1
-        // P0 (0,0), P1 (0,1), P2 (1,0), P3 (1,1) -> Z pattern strip
-        const simpleVertexData = new Float32Array([
-            0, 0, // Top-Left
-            0, 1, // Bottom-Left
-            1, 0, // Top-Right
-            1, 1  // Bottom-Right
-        ]);
-
-        this.vertexBuffer = this.device.createBuffer({
-          size: simpleVertexData.byteLength,
-          usage: USAGE.VERTEX | USAGE.COPY_DST,
-          mappedAtCreation: true,
-        });
-        new Float32Array(this.vertexBuffer.getMappedRange()).set(simpleVertexData);
-        this.vertexBuffer.unmap();
-
-        // 2. Instance Buffer
         this.instanceBuffer = this.device.createBuffer({
           size: this.maxInstances * this.instanceStride,
           usage: USAGE.VERTEX | USAGE.COPY_DST,
         });
 
-        // 3. Uniform Buffer (Resolution)
-        // ALIGNMENT NOTE: Uniform bindings usually require 16-byte alignment.
-        // vec2<f32> is 8 bytes, but we allocate 16 bytes to be safe.
         this.uniformBuffer = this.device.createBuffer({
           size: 16, 
           usage: USAGE.UNIFORM | USAGE.COPY_DST,
@@ -196,7 +182,7 @@ export class WebGPURenderer {
             this.device.createBindGroupLayout({
               entries: [{
                 binding: 0,
-                visibility: 1, // VERTEX stage (1)
+                visibility: 1, // VERTEX
                 buffer: { type: 'uniform' }
               }]
             })
@@ -212,21 +198,13 @@ export class WebGPURenderer {
             module,
             entryPoint: 'vs_main',
             buffers: [
-              // 0: Quad
-              {
-                arrayStride: 2 * 4,
-                attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }]
-              },
-              // 1: Instances
               {
                 arrayStride: this.instanceStride,
                 stepMode: 'instance',
                 attributes: [
-                  { shaderLocation: 1, offset: 0, format: 'float32x2' }, // Pos
-                  { shaderLocation: 2, offset: 8, format: 'float32x2' }, // Size
-                  { shaderLocation: 3, offset: 16, format: 'float32' },  // Rot
-                  { shaderLocation: 4, offset: 20, format: 'float32x4' },// Color
-                  { shaderLocation: 5, offset: 36, format: 'float32' },  // Type
+                  { shaderLocation: 0, offset: 0, format: 'float32x4' },  // Pos + Size
+                  { shaderLocation: 1, offset: 16, format: 'float32x4' }, // Color
+                  { shaderLocation: 2, offset: 32, format: 'float32x4' }, // Params
                 ]
               }
             ]
@@ -237,17 +215,17 @@ export class WebGPURenderer {
             targets: [{
                 format: presentationFormat,
                 blend: {
-                  color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                  color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
                   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
                 }
             }],
           },
           primitive: {
-            topology: 'triangle-strip',
+            topology: 'triangle-list', 
+            cullMode: 'none',
           },
         });
 
-        // Initial config
         this.configureContext(canvas, presentationFormat);
 
         return true;
@@ -273,7 +251,6 @@ export class WebGPURenderer {
   render(instanceData: Float32Array, count: number, width: number, height: number, canvas: HTMLCanvasElement) {
     if (!this.device || !this.pipeline || !this.uniformBuffer || !this.instanceBuffer) return;
 
-    // Auto-resize / Re-configure check
     if (canvas.width !== this.currentWidth || canvas.height !== this.currentHeight) {
         const format = (navigator as any).gpu.getPreferredCanvasFormat();
         this.configureContext(canvas, format);
@@ -282,11 +259,10 @@ export class WebGPURenderer {
     const context = canvas.getContext('webgpu') as any;
     if (!context) return;
 
-    // 1. Update Uniforms (Resolution)
-    // Pad to 4 floats (16 bytes) for alignment safety
+    // Update Uniforms
     this.device.queue.writeBuffer(this.uniformBuffer, 0, new Float32Array([width, height, 0, 0]));
 
-    // 2. Update Instances
+    // Update Instances
     if (count > 0) {
         this.device.queue.writeBuffer(
             this.instanceBuffer, 
@@ -297,7 +273,6 @@ export class WebGPURenderer {
         );
     }
 
-    // 3. Render Pass
     const commandEncoder = this.device.createCommandEncoder();
     const textureView = context.getCurrentTexture().createView();
 
@@ -318,27 +293,8 @@ export class WebGPURenderer {
     });
 
     passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, this.vertexBuffer);
-    passEncoder.setVertexBuffer(1, this.instanceBuffer);
-    
-    // Reverse render order via iterating instances backwards?
-    // WebGPU draws instances in buffer order.
-    // If we filled the buffer Forward (0..N), and we want Painter's Algo where 0 is TOP,
-    // we need to draw 0 LAST.
-    // So we should fill the buffer in REVERSE: N, N-1, ..., 0.
-    // Or just draw.
-    
-    // In viewport, we construct the buffer based on rootNodeIds.
-    // Viewport iterates rootNodeIds 0..N.
-    // If rootNodeIds[0] is TOP, we want it at end of buffer (drawn last).
-    // Viewport logic:
-    // let index = 0; for(const id of nodes) { ... fill buffer at index ... }
-    // This fills buffer 0..N.
-    // So rootNodeIds[0] is at instance 0. Drawn first. Background.
-    // We want rootNodeIds[0] to be Top.
-    // So we need to iterate in REVERSE in Viewport.
-    
-    passEncoder.draw(4, count);
+    passEncoder.setVertexBuffer(0, this.instanceBuffer);
+    passEncoder.draw(6, count);
     passEncoder.end();
 
     this.device.queue.submit([commandEncoder.finish()]);

@@ -48,6 +48,7 @@ export interface Node {
   type: 'rect' | 'circle' | 'text' | 'group' | 'vector' | 'value';
   parentId: string | null;
   properties: Record<string, Property>;
+  ui: { x: number; y: number };
 }
 
 export interface AudioState {

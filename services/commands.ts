@@ -212,6 +212,29 @@ export const Commands = {
           redo: (s) => applyMove(s, toPos)
       };
   },
+  updateNodeUi: (nodeId: string, fromPos: {x:number, y:number}, toPos: {x:number, y:number}): Command => {
+      const applyUiMove = (s: ProjectState, pos: {x:number, y:number}) => {
+          const node = s.nodes[nodeId];
+          if (!node) return s;
+          return {
+              ...s,
+              nodes: {
+                  ...s.nodes,
+                  [nodeId]: {
+                      ...node,
+                      ui: { x: pos.x, y: pos.y }
+                  }
+              }
+          };
+      };
+      return {
+          id: crypto.randomUUID(),
+          name: `Move UI ${nodeId}`,
+          timestamp: Date.now(),
+          undo: (s) => applyUiMove(s, fromPos),
+          redo: (s) => applyUiMove(s, toPos)
+      };
+  },
   reorderNode: (fromIndex: number, toIndex: number): Command => {
       const applyReorder = (s: ProjectState, f: number, t: number) => {
           const newRoots = [...s.rootNodeIds];
