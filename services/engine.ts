@@ -469,7 +469,7 @@ export function renderSVG(project: ProjectState, audioData?: any, hybridMode: bo
       height: "100%", 
       viewBox: `0 0 ${width} ${height}`,
       xmlns: "http://www.w3.org/2000/svg",
-      style: { background: 'transparent' } 
+      style: { background: 'transparent', overflow: 'visible' } 
     },
     [
         gradients.length > 0 && React.createElement('defs', { key: 'defs' }, 

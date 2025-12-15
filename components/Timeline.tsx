@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState } from 'react';
 import { ProjectState, Property, Keyframe } from '../types';
 import { Play, Pause, SkipBack, SkipForward, Music, Terminal, Diamond } from 'lucide-react';
 import { ConsolePanel } from './ConsolePanel';
@@ -23,11 +23,18 @@ export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTog
 
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const trackStartX = 256; // Width of header (w-64)
     
-    // Adjust mouse X relative to the timeline start
-    const x = e.clientX - rect.left - trackStartX;
-    const trackWidth = rect.width - trackStartX;
+    // Dynamically calculate header width to account for Zoom/DPI scaling
+    const headerEl = containerRef.current.querySelector('.track-header');
+    const trackStartX = headerEl ? headerEl.getBoundingClientRect().width : 256;
+    
+    // Adjust mouse X relative to the timeline start, accounting for borders
+    // clientWidth excludes the scrollbar, giving us the actual interactive track width
+    const clientWidth = containerRef.current.clientWidth;
+    const clientLeft = containerRef.current.clientLeft || 0;
+    
+    const x = e.clientX - rect.left - clientLeft - trackStartX;
+    const trackWidth = clientWidth - trackStartX;
     
     if (trackWidth <= 0) return;
 
@@ -167,7 +174,7 @@ export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTog
         >
             {/* Sticky Ruler */}
             <div className="sticky top-0 z-40 flex h-6 border-b border-zinc-700 bg-zinc-800">
-                <div className="w-64 shrink-0 border-r border-zinc-700 flex items-center px-4 text-[10px] font-bold text-zinc-500 uppercase tracking-wider bg-zinc-800 z-50">
+                <div className="w-64 shrink-0 border-r border-zinc-700 flex items-center px-4 text-[10px] font-bold text-zinc-500 uppercase tracking-wider bg-zinc-800 z-50 track-header">
                     Timeline
                 </div>
                 <div className="flex-1 relative overflow-hidden">
@@ -191,7 +198,9 @@ export const Timeline: React.FC<TimelineProps> = ({ project, onTimeChange, onTog
             </div>
 
             {/* Playhead Line Container (Spans full scrolling content height) */}
-            <div className="absolute top-0 bottom-0 left-64 right-0 pointer-events-none z-30">
+            <div 
+                className="absolute top-0 bottom-0 left-64 right-0 pointer-events-none z-30"
+            >
                  <div 
                     className="absolute top-0 bottom-0 w-px bg-red-500/50 -translate-x-1/2"
                     style={{ left: `${(project.meta.currentTime / project.meta.duration) * 100}%` }}

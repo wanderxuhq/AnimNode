@@ -13,6 +13,8 @@ interface NodeGraphProps {
 const HEADER_HEIGHT = 40;
 const PROP_ROW_HEIGHT = 28;
 const NODE_WIDTH = 240;
+const PORT_WIDTH = 24; 
+const PADDING_TOP = 8; // Tailwind py-2 is 0.5rem = 8px
 
 // Colors
 const COLOR_EXPR = '#4ade80'; // Green-400
@@ -188,8 +190,13 @@ export const NodeGraph: React.FC<NodeGraphProps> = ({ project, onSelect, onCommi
       if (index === -1) return { x: 0, y: 0 };
 
       // Geometry constants
-      const y = pos.y + HEADER_HEIGHT + (index * PROP_ROW_HEIGHT) + (PROP_ROW_HEIGHT / 2);
-      const x = isInput ? pos.x : pos.x + NODE_WIDTH;
+      // Fix: Add PADDING_TOP (8px) because the container has py-2
+      const y = pos.y + HEADER_HEIGHT + PADDING_TOP + (index * PROP_ROW_HEIGHT) + (PROP_ROW_HEIGHT / 2);
+      
+      // Fix: Calculate the CENTER of the port container, not the edge
+      const x = isInput 
+        ? pos.x + (PORT_WIDTH / 2) 
+        : pos.x + NODE_WIDTH - (PORT_WIDTH / 2);
 
       return { x, y };
   };
@@ -273,8 +280,9 @@ export const NodeGraph: React.FC<NodeGraphProps> = ({ project, onSelect, onCommi
 
   const renderWirePath = (x1: number, y1: number, x2: number, y2: number) => {
       const dist = Math.abs(x1 - x2);
-      const cp1x = x1 + dist * 0.5;
-      const cp2x = x2 - dist * 0.5;
+      // Smoother curvature
+      const cp1x = x1 + Math.max(dist * 0.5, 30);
+      const cp2x = x2 - Math.max(dist * 0.5, 30);
       return `M ${x1} ${y1} C ${cp1x} ${y1}, ${cp2x} ${y2}, ${x2} ${y2}`;
   };
 
@@ -388,17 +396,25 @@ export const NodeGraph: React.FC<NodeGraphProps> = ({ project, onSelect, onCommi
                                     <div key={key} className="h-[28px] px-0 flex items-center relative group">
                                          
                                          {/* INPUT PORT (Left) */}
-                                         <div className="w-4 h-full flex items-center justify-center relative">
+                                         {/* Huge hit area for easier connections */}
+                                         <div 
+                                            className="h-full flex items-center justify-center relative cursor-pointer group/port"
+                                            style={{ width: PORT_WIDTH }}
+                                            onMouseUp={(e) => handleInputMouseUp(e, id, key)}
+                                            title={`Input: ${key}`}
+                                         >
+                                            {/* Hover Highlight */}
+                                            <div className="absolute inset-1 rounded bg-zinc-700/50 opacity-0 group-hover/port:opacity-100 transition-opacity pointer-events-none" />
+                                            
+                                            {/* Visual Dot */}
                                             <div 
-                                                className={`w-3 h-3 rounded-full border border-zinc-800 cursor-pointer transition-colors hover:scale-125 z-10 ${isRef ? 'bg-purple-500' : isExpr ? 'bg-green-500' : 'bg-zinc-700 hover:bg-zinc-400'}`}
-                                                onMouseUp={(e) => handleInputMouseUp(e, id, key)}
-                                                title={`Input: ${key}`}
+                                                className={`w-3 h-3 rounded-full border border-zinc-800 z-10 transition-transform group-hover/port:scale-125 pointer-events-none ${isRef ? 'bg-purple-500' : isExpr ? 'bg-green-500' : 'bg-zinc-700'}`}
                                             >
-                                                <div className="w-1 h-1 bg-black/50 rounded-full absolute top-1 left-1 pointer-events-none" />
+                                                <div className="w-1 h-1 bg-black/50 rounded-full absolute top-1 left-1" />
                                             </div>
                                          </div>
 
-                                         <div className="flex-1 flex justify-between items-center text-[10px] px-2 overflow-hidden">
+                                         <div className="flex-1 flex justify-between items-center text-[10px] px-1 overflow-hidden pointer-events-none">
                                              <span className="text-zinc-400 font-medium truncate mr-2">{key}</span>
                                              <span className={`font-mono truncate text-right opacity-70 ${isRef ? 'text-purple-400' : isExpr ? 'text-green-400' : 'text-zinc-500'}`}>
                                                  {isRef ? 'LINK' : isExpr ? 'EXPR' : String(prop.value).substring(0, 10)}
@@ -406,11 +422,19 @@ export const NodeGraph: React.FC<NodeGraphProps> = ({ project, onSelect, onCommi
                                          </div>
 
                                          {/* OUTPUT PORT (Right) */}
-                                         <div className="w-4 h-full flex items-center justify-center relative">
+                                         {/* Huge hit area for easier connections */}
+                                         <div 
+                                            className="h-full flex items-center justify-center relative cursor-crosshair group/port"
+                                            style={{ width: PORT_WIDTH }}
+                                            onMouseDown={(e) => handleOutputMouseDown(e, id, key)}
+                                            title={`Output: ${key}`}
+                                         >
+                                             {/* Hover Highlight */}
+                                             <div className="absolute inset-1 rounded bg-zinc-700/50 opacity-0 group-hover/port:opacity-100 transition-opacity pointer-events-none" />
+                                             
+                                             {/* Visual Dot */}
                                              <div 
-                                                className="w-3 h-3 rounded-full border border-zinc-800 bg-zinc-700 hover:bg-zinc-400 cursor-crosshair transition-colors hover:scale-125 z-10"
-                                                onMouseDown={(e) => handleOutputMouseDown(e, id, key)}
-                                                title={`Output: ${key}`}
+                                                className="w-3 h-3 rounded-full border border-zinc-800 bg-zinc-700 z-10 transition-transform group-hover/port:scale-125 pointer-events-none"
                                              />
                                          </div>
                                     </div>

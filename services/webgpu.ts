@@ -32,7 +32,11 @@ const USAGE = {
 // --- SHADERS (WGSL) ---
 const SHADER_CODE = `
 struct Uniforms {
-  resolution : vec2<f32>,
+  canvasSize : vec2<f32>, // The size of the full screen canvas
+  stageSize : vec2<f32>,  // The size of the Project Stage (e.g. 800x600)
+  viewOffset : vec2<f32>, // Pan X/Y
+  zoom : f32,             // Scale K
+  pad : f32,
 }
 @group(0) @binding(0) var<uniform> uniforms : Uniforms;
 
@@ -69,39 +73,48 @@ fn vs_main(
   let uv = uvs[vIdx];
 
   // Unpack Input
-  let centerPos = input.instancePosSize.xy;   // CENTER World Position
+  let centerPos = input.instancePosSize.xy;   // CENTER World Position (Node Local)
   let size = input.instancePosSize.zw;        // Width, Height
   let rotDeg = input.instanceParams.x;
   
   // 1. Calculate Local Position relative to Center
-  // UV is 0..1
-  // We want local space to be -0.5..0.5
-  // So a 100px wide box goes from -50 to 50
+  // UV is 0..1, Center is 0.5, 0.5
   let centeredUV = uv - vec2<f32>(0.5, 0.5);
   let localPos = centeredUV * size;
   
-  // 2. Rotate Local Position around (0,0) [The Center]
+  // 2. Rotate Local Position around (0,0) [The Node Center]
   let rad = radians(rotDeg);
   let c = cos(rad);
   let s = sin(rad);
   
-  // Standard 2D Rotation Matrix
-  // x' = x*cos - y*sin
-  // y' = x*sin + y*cos
   let rotatedLocal = vec2<f32>(
     localPos.x * c - localPos.y * s,
     localPos.x * s + localPos.y * c
   );
-
-  // 3. Translate to World Position
-  let worldPos = centerPos + rotatedLocal;
+  
+  // 3. Project to Screen Space
+  // The 'Stage' is centered in the Viewport if Pan is 0,0.
+  // We need to map [NodePos -> ScreenPos]
+  
+  // Step A: Node position relative to Stage Center
+  let offsetFromStageCenter = centerPos - (uniforms.stageSize * 0.5);
+  
+  // Step B: Scale everything by Zoom
+  let scaledOffset = offsetFromStageCenter * uniforms.zoom;
+  let scaledLocal = rotatedLocal * uniforms.zoom;
+  
+  // Step C: Apply View Pan + Canvas Center
+  // Canvas Center is (CanvasW/2, CanvasH/2)
+  let canvasCenter = uniforms.canvasSize * 0.5;
+  
+  let screenPos = canvasCenter + uniforms.viewOffset + scaledOffset + scaledLocal;
   
   // 4. Project to Clip Space
   // Screen X: 0..W  => NDC X: -1..1
   // Screen Y: 0..H  => NDC Y:  1..-1 (Y-Up in WebGPU Clip Space)
   
-  let clipX = (worldPos.x / uniforms.resolution.x) * 2.0 - 1.0;
-  let clipY = 1.0 - (worldPos.y / uniforms.resolution.y) * 2.0;
+  let clipX = (screenPos.x / uniforms.canvasSize.x) * 2.0 - 1.0;
+  let clipY = 1.0 - (screenPos.y / uniforms.canvasSize.y) * 2.0;
 
   var output : VertexOutput;
   output.Position = vec4<f32>(clipX, clipY, 0.0, 1.0);
@@ -139,8 +152,7 @@ export class WebGPURenderer {
   instanceBuffer: GPUBuffer | null = null;
   
   // State
-  instanceCount = 0;
-  maxInstances = 2000;
+  maxInstances = 4000;
   instanceStride = 16 * 4; // 64 bytes
   
   currentWidth = 0;
@@ -163,7 +175,7 @@ export class WebGPURenderer {
         if (!this.device) return false;
 
         const module = this.device.createShaderModule({
-          label: 'Shape Shader vCenter',
+          label: 'Shape Shader vFullViewport',
           code: SHADER_CODE,
         });
 
@@ -172,8 +184,10 @@ export class WebGPURenderer {
           usage: USAGE.VERTEX | USAGE.COPY_DST,
         });
 
+        // 32 bytes aligned (vec2 + vec2 + vec2 + f32 + pad)
+        // Actually: vec2(8) + vec2(8) + vec2(8) + f32(4) + pad(4) = 32 bytes
         this.uniformBuffer = this.device.createBuffer({
-          size: 16, 
+          size: 32, 
           usage: USAGE.UNIFORM | USAGE.COPY_DST,
         });
 
@@ -248,10 +262,22 @@ export class WebGPURenderer {
       }
   }
 
-  render(instanceData: Float32Array, count: number, width: number, height: number, canvas: HTMLCanvasElement) {
+  render(
+      instanceData: Float32Array, 
+      count: number, 
+      canvasWidth: number, 
+      canvasHeight: number,
+      view: { x: number, y: number, k: number },
+      stageWidth: number, 
+      stageHeight: number,
+      canvas: HTMLCanvasElement
+  ) {
     if (!this.device || !this.pipeline || !this.uniformBuffer || !this.instanceBuffer) return;
 
-    if (canvas.width !== this.currentWidth || canvas.height !== this.currentHeight) {
+    // Resize canvas if container size changes
+    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
         const format = (navigator as any).gpu.getPreferredCanvasFormat();
         this.configureContext(canvas, format);
     }
@@ -259,8 +285,15 @@ export class WebGPURenderer {
     const context = canvas.getContext('webgpu') as any;
     if (!context) return;
 
-    // Update Uniforms
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, new Float32Array([width, height, 0, 0]));
+    // Update Uniforms: CanvasSize(vec2), StageSize(vec2), ViewOffset(vec2), Zoom(f32), Pad(f32)
+    // Structure alignment: 8 bytes per vec2
+    const uniformData = new Float32Array([
+        canvasWidth, canvasHeight, 
+        stageWidth, stageHeight, 
+        view.x, view.y,
+        view.k, 0
+    ]);
+    this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
     // Update Instances
     if (count > 0) {
@@ -279,7 +312,7 @@ export class WebGPURenderer {
     const passEncoder = commandEncoder.beginRenderPass({
       colorAttachments: [{
         view: textureView,
-        clearValue: { r: 0.09, g: 0.09, b: 0.1, a: 1.0 },
+        clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }, // Transparent clear
         loadOp: 'clear',
         storeOp: 'store',
       }],

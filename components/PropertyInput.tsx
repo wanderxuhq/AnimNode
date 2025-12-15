@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Property, Node, Command, PropertyType, Keyframe } from '../types';
 import { Code, Hash, Link as LinkIcon, Braces, List, FunctionSquare, Lock, Diamond, Type as TypeIcon, ToggleLeft } from 'lucide-react';
 import { detectLinkCycle, evaluateProperty } from '../services/engine';
 import { consoleService } from '../services/console';
 import { Commands } from '../services/commands';
+import { audioController } from '../services/audio';
 
 interface PropertyInputProps {
   prop: Property;
@@ -425,6 +426,40 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
       if (onToggleKeyframe) onToggleKeyframe(nodeId, propKey, prop.value);
   };
 
+  // --- DEBUG / INSPECTOR VALUE CALCULATION ---
+  const debugValue = useMemo(() => {
+      if (!isRef && !isExpression) return null;
+      if (isDerivedPath) return null;
+
+      try {
+          const ctx: any = {
+             project: { nodes },
+             audio: audioController.getAudioData(),
+             get: (nid: string, pid: string, depth: number = 0) => {
+                 const node = nodes[nid];
+                 if (!node) return 0;
+                 const p = node.properties[pid];
+                 return evaluateProperty(p, currentTime, ctx, depth + 1);
+             }
+          };
+          
+          const val = evaluateProperty(prop, currentTime, ctx);
+          
+          if (val === null) return 'null';
+          if (val === undefined) return 'undefined';
+          if (typeof val === 'number') return Math.round(val * 10000) / 10000;
+          if (typeof val === 'object') {
+              if (Array.isArray(val)) return `Array(${val.length})`;
+              try { return JSON.stringify(val); } catch (e) { return '[Object]'; }
+          }
+          return String(val);
+      } catch (e) {
+          return "Err";
+      }
+  }, [prop, currentTime, nodes, isRef, isExpression, isDerivedPath]);
+
+  const displayDebugValue = debugValue ? (String(debugValue).length > 30 ? String(debugValue).substring(0, 30) + '...' : String(debugValue)) : '';
+
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-center group">
@@ -539,6 +574,14 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
                   ))}
               </select>
               {cycleDetected && <div className="text-red-400 text-[10px] text-center font-bold">Cycle Detected</div>}
+              
+              {/* Debug Value Display for Ref */}
+              <div className="flex justify-between items-center px-1.5 py-0.5 bg-black/20 rounded border border-white/5 mt-1">
+                  <span className="text-[9px] text-zinc-500">Current Value:</span>
+                  <span className="text-[9px] font-mono text-indigo-200 truncate max-w-[120px]" title={String(debugValue)}>
+                      {displayDebugValue}
+                  </span>
+              </div>
           </div>
       )}
 
@@ -555,9 +598,11 @@ export const PropertyInput: React.FC<PropertyInputProps> = ({ prop, propKey, nod
             onBlur={handleCodeBlur}
             onKeyDown={handleInputKeyDown}
           />
-          <div className="flex justify-between text-[10px] text-zinc-500 px-1">
-             <span>vars: t, val, ctx, [variables]</span>
-             <span className="text-blue-500 flex items-center gap-1">Live</span>
+          <div className="flex justify-between items-center text-[10px] text-zinc-500 px-1 bg-zinc-900/50 rounded py-0.5">
+             <span>vars: t, val, ctx</span>
+             <span className="text-blue-300 font-mono truncate max-w-[120px] flex items-center gap-1" title={String(debugValue)}>
+                <span className="text-zinc-600">=</span> {displayDebugValue}
+             </span>
           </div>
         </div>
       )}
